@@ -23,6 +23,26 @@
 
 提示词可以使用英文。初始化脚本会检测 LTspice，创建隔离的 Python 环境，安装固定版本的 Python 依赖，从上游获取 Weave CLI，安装 Weave 的 npm 依赖，执行一次全新的 RC 冒烟测试，并将本机路径保存到被忽略的配置文件中。
 
+## 输出目录和文件形式
+
+默认输出根目录为 Skill 目录下的 `outputs/`。每个电路使用独立的子目录：
+
+```text
+<Skill目录>/outputs/<电路名称>/
+```
+
+目录中会保存当前电路状态的结果文件：
+
+- `<电路名称>.net`：实际提交给 LTspice 仿真的 SPICE 网表，也是电路的事实来源。
+- `<电路名称>.raw`：LTspice 生成的波形数据文件。
+- `<电路名称>.log`：本次仿真的 LTspice 日志文件。
+- `<电路名称>.asc`：由 Weave 根据同一个 `.net` 生成的 LTspice 原理图；只有需要原理图时生成。
+- `*weave-verification*.txt`：Weave round-trip connectivity verification 结果，只有返回 `MATCH` 才算验证通过。
+- `*.png`：按请求生成的瞬态波形图、AC 频率响应图或其他结果图。
+- `*.json` / `*.md`：运行报告、测量结果或摘要（按请求生成）。
+
+每次成功运行后，Codex 会在最终回复中明确列出输出目录，以及最终 `.net`、`.asc`（如生成）、`.raw`、`.log` 和 Weave 验证结果文件的完整路径。
+
 ## 校验内容
 
 - 不会只根据 LTspice 的退出码判断仿真成功。
