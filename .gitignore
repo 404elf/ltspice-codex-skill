@@ -1,0 +1,37 @@
+# Local bootstrap state and environments
+.venv/
+.ltspice-codex-config.json
+__pycache__/
+*.py[cod]
+
+# Runtime and generated simulation artifacts
+*.raw
+*.log
+*.asc
+*.net
+*.cir
+*.op.raw
+*.op.log
+*.run-report.json
+*.weave-verification.txt
+*.json
+!.github/
+!tests/*.json
+*.png
+*.jpg
+*.tsv
+outputs/
+test-runs/
+!tests/quick_rc.net
+
+# Tool downloads/installations
+tools/
+node_modules/
+npm-debug.log*
+
+# Editors and local OS files
+.idea/
+.vscode/
+*.code-workspace
+Thumbs.db
+.DS_Store
