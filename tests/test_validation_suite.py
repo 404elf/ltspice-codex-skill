@@ -11,6 +11,8 @@ sys.path.insert(0, str(SCRIPTS))
 from run_validation_suite import (  # noqa: E402
     check_metric,
     can_use_exact_source,
+    coalesce_analyses,
+    dry_run_spec,
     expand_corners,
     preflight_result_ok,
     render_analysis_net,
@@ -52,6 +54,53 @@ class ValidationSuiteUnitTests(unittest.TestCase):
         source = [("tran", ".tran 0 1m"), ("ac", ".ac dec 10 10 10k")]
         self.assertFalse(can_use_exact_source(source, {"kind": "tran"}))
         self.assertTrue(can_use_exact_source([source[0]], {"kind": "tran"}))
+
+    def test_combined_param_line_is_replaced_reliably(self) -> None:
+        source = ".param R=10k C=100n\nR1 in out {R}\nC1 out 0 {C}\n.tran 0 1m\n.end\n"
+        updated = replace_parameters(source, {"R": "12k", "C": "120n"})
+        self.assertIn(".param R=12k C=120n", updated)
+
+    def test_dry_run_allows_scalar_op_metrics_and_rejects_axis_metrics(self) -> None:
+        net = ".param R=1k\nV1 in 0 1\nR1 in out {R}\nR2 out 0 1k\n.op\n.end\n"
+        scalar = {"analyses": [{"name": "op", "kind": "op"}], "metrics": {
+            "out": {"analysis": "op", "trace": "V(out)", "kind": "value"},
+        }}
+        self.assertTrue(dry_run_spec(net, Path("op.net"), scalar)["ok"])
+        axis = {"analyses": [{"name": "op", "kind": "op"}], "metrics": {
+            "out": {"analysis": "op", "trace": "V(out)", "kind": "value_at", "x": 1},
+        }}
+        report = dry_run_spec(net, Path("op.net"), axis)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("needs an analysis axis" in item for item in report["errors"]))
+
+    def test_dry_run_rejects_invalid_dc_and_duplicate_parameters(self) -> None:
+        net = ".param R=1k\n.param R=2k\nV1 in 0 1\nR1 in 0 {R}\n.dc V1 1 1 1\n.end\n"
+        spec = {"analyses": [{"name": "dc", "kind": "dc"}]}
+        report = dry_run_spec(net, Path("invalid.net"), spec)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("duplicate .param" in item for item in report["errors"]))
+        self.assertTrue(any("start=stop" in item for item in report["errors"]))
+
+    def test_monotonic_corner_plan_reduces_two_parameters_to_two_endpoints(self) -> None:
+        source = ".param R=1k C=100n\n.tran 0 1m\n.end\n"
+        cartesian = expand_corners(source, {"R": [-10, 10], "C": [-10, 10]})
+        reduced = expand_corners(
+            source,
+            {"R": [-10, 10], "C": [-10, 10]},
+            strategy="monotonic",
+            monotonic={"fc": {"R": "inverse", "C": "inverse"}},
+        )
+        self.assertEqual(len(cartesian), 4)
+        self.assertEqual(len(reduced), 2)
+
+    def test_duplicate_analysis_directives_are_coalesced(self) -> None:
+        analyses = [
+            {"name": "ac-main", "kind": "ac", "directive": ".ac dec 10 10 10k"},
+            {"name": "ac-cutoff", "kind": "ac", "directive": ".ac dec 10 10 10k"},
+        ]
+        grouped = coalesce_analyses(analyses, [])
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0]["aliases"], ["ac-main", "ac-cutoff"])
 
 
 if __name__ == "__main__":

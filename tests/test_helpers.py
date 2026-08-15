@@ -11,7 +11,7 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 
-from preflight import terminals  # noqa: E402
+from preflight import terminals, weave_compatibility  # noqa: E402
 from validate_log import find_errors  # noqa: E402
 from weave_convert import sha256  # noqa: E402
 
@@ -38,6 +38,17 @@ class HelperUnitTests(unittest.TestCase):
         self.assertEqual(terminals("Q1 collector base emitter model".split()), ["collector", "base", "emitter"])
         self.assertEqual(terminals("Q1 collector base emitter substrate model area=1".split()), ["collector", "base", "emitter", "substrate"])
         self.assertEqual(terminals("J1 drain gate source JMOD".split()), ["drain", "gate", "source"])
+
+    def test_weave_compatibility_rejects_inline_subckt_and_warns_on_hints(self) -> None:
+        result = weave_compatibility([
+            ".subckt amp in out vcc vee",
+            "X1 in out vcc vee amp",
+            ".nodeset V(out)=0",
+        ])
+        self.assertFalse(result["ok"])
+        details = result["details"]
+        self.assertTrue(details["inline_subckt"])
+        self.assertTrue(details["validation_only_directives"])
 
 
 if __name__ == "__main__":
