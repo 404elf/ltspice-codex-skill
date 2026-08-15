@@ -4,21 +4,32 @@
 
 本仓库不包含 LTspice 安装包、专有模型或任何旧版 LTSPICE-AI 文件。
 
-## 安装
+## 快速开始
 
-在仓库根目录执行：
+1. 单独安装 Analog Devices 发布的 LTspice。
+2. 将本仓库安装或交给 Codex，然后直接发送下面这一句话：
 
-```powershell
-py -3 bootstrap.py
-```
+   > Install and configure this LTspice simulation skill on this machine.
 
-初始化脚本会自动：
+3. 配置完成后，直接描述要设计和仿真的电路，例如：
+
+   > Design a 1 kHz Butterworth low-pass filter and simulate it with LTspice.
+
+Codex 会根据本仓库中的 `bootstrap.py` 自动完成配置。初始化脚本会自动：
 
 - 检测本机 LTspice；
 - 创建 Skill 专用 `.venv` 并安装 `requirements.txt`；
 - 获取 Weave CLI 并安装其 npm 依赖；
 - 写入本机配置文件 `.ltspice-codex-config.json`；
 - 执行一次全新的 RC 冒烟测试。
+
+提示词可以使用英文。安装或配置时不需要把 PowerShell 当前目录切换到某个固定位置；如果手动执行脚本，则需要在仓库根目录运行。
+
+手动安装或排错：
+
+```powershell
+py -3 bootstrap.py
+```
 
 只检查已有配置，不运行冒烟测试：
 
@@ -28,9 +39,12 @@ py -3 bootstrap.py --check-only
 
 ## 使用
 
-将本仓库安装为 Codex Skill 后，直接描述电路即可，例如：
+安装完成后，可以使用 Skill 名称调用，也可以直接用自然语言描述：
 
-> Design a 1 kHz Butterworth low-pass filter and simulate it with LTspice.
+```text
+$ltspice-sim-v2
+设计并仿真一个截止频率为 1 kHz 的 RC 低通滤波器。
+```
 
 Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 模式。`STANDARD`/`STRICT` 会把 AC、瞬态、DC、角落或扫参等重复工作交给确定性的 validation suite 执行，减少模型与工具之间的重复往返；模型只负责规格、拓扑、初始设计、工程判断和失败后的针对性修改。
 
