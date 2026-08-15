@@ -11,6 +11,11 @@ from collections import Counter
 from pathlib import Path
 
 
+PREFLIGHT_VERSION = "2"
+WEAVE_PREFIXES = set("RCLVIDQMJXEGFHBSWTKA")
+VALIDATION_ONLY_DIRECTIVES = (".nodeset", ".options", ".save", ".meas", ".step")
+
+
 def terminals(tokens: list[str]) -> list[str]:
     if not tokens:
         return []
@@ -28,6 +33,34 @@ def terminals(tokens: list[str]) -> list[str]:
     return tokens[1:1 + counts.get(prefix, 0)]
 
 
+def weave_compatibility(active: list[str]) -> dict[str, object]:
+    inline_subckt = [line for line in active if re.match(r"^\.(subckt|ends)\b", line, re.IGNORECASE)]
+    validation_only = [line for line in active if line.lower().startswith(VALIDATION_ONLY_DIRECTIVES)]
+    unsupported: list[str] = []
+    for index, line in enumerate(active):
+        if line.startswith(".") or line.startswith(";"):
+            continue
+        tokens = line.split()
+        if not tokens:
+            continue
+        prefix = tokens[0][0].upper()
+        # Weave intentionally tolerates an unsupported title line in position 0.
+        if index == 0 and prefix not in WEAVE_PREFIXES:
+            continue
+        if prefix not in WEAVE_PREFIXES:
+            unsupported.append(line)
+    return {
+        "name": "weave_compatibility",
+        "ok": not inline_subckt and not unsupported,
+        "details": {
+            "inline_subckt": inline_subckt,
+            "unsupported_elements": unsupported,
+            "validation_only_directives": validation_only,
+            "warning": "validation-only directives should be injected only into temporary validation NETs" if validation_only else None,
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run conservative STRICT-mode netlist checks.")
     parser.add_argument("--net", required=True, type=Path)
@@ -43,7 +76,7 @@ def main() -> int:
     active = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("*")]
     checks: list[dict[str, object]] = []
     checks.append({"name": "end_directive", "ok": any(x.lower() == ".end" for x in active)})
-    checks.append({"name": "analysis_directive", "ok": any(x.lower().startswith((".tran", ".ac", ".op", ".dc")) for x in active)})
+    checks.append({"name": "analysis_directive", "ok": any(x.lower().startswith((".tran", ".ac", ".op", ".dc", ".noise", ".tf", ".pz")) for x in active)})
     placeholders = [line for line in lines if re.search(r"TODO|<[^>]+>|\{\{.+\}\}", line, re.IGNORECASE)]
     checks.append({"name": "no_placeholders", "ok": not placeholders, "details": placeholders})
 
@@ -59,7 +92,13 @@ def main() -> int:
     checks.append({"name": "no_obvious_single_use_nets", "ok": not single_use, "details": single_use})
     missing = [name for name in args.required_net if name.lower() not in counts]
     checks.append({"name": "required_nets", "ok": not missing, "details": missing})
-    result = {"net": str(net), "ok": all(bool(item["ok"]) for item in checks), "checks": checks}
+    checks.append(weave_compatibility(active))
+    result = {
+        "preflight_version": PREFLIGHT_VERSION,
+        "net": str(net),
+        "ok": all(bool(item["ok"]) for item in checks),
+        "checks": checks,
+    }
     payload = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
     if args.json:
         args.json.resolve().write_text(payload, encoding="utf-8")

@@ -40,6 +40,7 @@ def run_simulation(
     *,
     artifact_stem: str | None = None,
     ascii_output: bool = False,
+    timeout_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run one LTspice job and return its deterministic validation record.
 
@@ -82,16 +83,29 @@ def run_simulation(
         source_log_path = stage_dir / f"{run_input.stem}.log"
         run_dir = stage_dir
     command = build_command(executable, run_input, ascii_output=ascii_output)
+    timed_out = False
     try:
-        completed = subprocess.run(
-            command,
-            cwd=str(run_dir),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(run_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            completed = subprocess.CompletedProcess(
+                command,
+                -1,
+                stdout=stdout,
+                stderr=stderr,
+            )
         source_fresh_raw = source_raw_path.is_file() and source_raw_path.stat().st_mtime_ns >= started_ns
         source_fresh_log = source_log_path.is_file() and source_log_path.stat().st_mtime_ns >= started_ns
         if source_fresh_raw and source_raw_path.resolve() != raw_path.resolve():
@@ -114,6 +128,8 @@ def run_simulation(
     errors = find_errors(log_text) if fresh_log else ["fresh log file missing"]
     if not fresh_raw:
         errors.insert(0, "fresh raw file missing")
+    if timed_out:
+        errors.insert(0, f"simulation timed out after {timeout_seconds:g} seconds")
     ok = completed.returncode == 0 and fresh_raw and fresh_log and not errors
     result = {
         "ok": ok,
@@ -121,6 +137,8 @@ def run_simulation(
         "run_input": str(run_input),
         "command": command,
         "returncode": completed.returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": timeout_seconds,
         "fresh_raw": fresh_raw,
         "fresh_log": fresh_log,
         "raw": str(raw_path),
@@ -148,11 +166,13 @@ def main() -> int:
     parser.add_argument("--report", type=Path, help="Optional JSON report path")
     parser.add_argument("--artifact-stem", help="Optional output RAW/LOG stem")
     parser.add_argument("--ascii", action="store_true", help="Request ASCII RAW output instead of the default binary RAW")
+    parser.add_argument("--timeout-seconds", type=float, help="Stop a long-running LTspice job after this many seconds")
     args = parser.parse_args()
 
     result = run_simulation(
         args.input, args.ltspice, args.report,
         artifact_stem=args.artifact_stem, ascii_output=args.ascii,
+        timeout_seconds=args.timeout_seconds,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result.get("ok") else 1

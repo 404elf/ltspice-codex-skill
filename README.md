@@ -1,5 +1,13 @@
 # LTspice Codex Skill v2
 
+## Validation planning and evidence reuse
+
+The validation suite performs a static specification dry-run before it calls LTspice. It rejects incompatible analyses and metrics, unsafe `.param`/corner edits, missing traces or references, invalid `.dc` sweeps, and missing `.lib`/`.include` dependencies early.
+
+Successful simulation evidence is stored in `simulation_evidence.json` and is bound to the exact NET/rendered analysis, parameters, dependency contents, LTspice executable, and run settings. Changing only a metric, target, tolerance, trace selection, or report format reuses the matching fresh RAW/LOG and reparses it without another LTspice call. A changed circuit, model dependency, analysis directive, parameter, or executable invalidates the affected evidence.
+
+Relative `.lib`/`.include` files are automatically staged for temporary analysis NETs. Use `corner_strategy: "monotonic"` only when the declared endpoint directions are mathematically justified; otherwise use Cartesian corners. `QUICK`, `STANDARD`, and `STRICT` are final plans, not a sequence of repeated nominal runs. `STRICT` still retains Weave `MATCH` and the final generated-ASC LTspice validation.
+
 这是一个独立、可移植的 Codex Skill，用于根据自然语言生成 LTspice 网表、执行仿真、校验 RAW/LOG、测量指标，并用 Weave 将最终 NET 转换为 LTspice ASC 原理图。
 
 本仓库不包含 LTspice 安装包、专有模型或任何旧版 LTSPICE-AI 文件。
@@ -46,7 +54,7 @@ $ltspice-sim-v2
 设计并仿真一个截止频率为 1 kHz 的 RC 低通滤波器。
 ```
 
-Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 模式。`STANDARD`/`STRICT` 会把 AC、瞬态、DC、角落或扫参等重复工作交给确定性的 validation suite 执行，减少模型与工具之间的重复往返；模型只负责规格、拓扑、初始设计、工程判断和失败后的针对性修改。
+Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 模式。它们是最终验证计划，不是 `QUICK`→`STANDARD`→`STRICT` 的逐级重复执行。`STANDARD`/`STRICT` 会把 AC、瞬态、DC、角落或扫参等工作交给确定性的 validation suite 执行；如果计划已经包含 nominal 分析，就不会再额外运行重复的 QUICK。
 
 validation suite 的核心调用形式为：
 
@@ -58,7 +66,7 @@ validation suite 的核心调用形式为：
   --markdown <output-directory>/validation_summary.md
 ```
 
-它会为每个分析和确定性 corner 执行一次 LTspice，要求每次都产生新的 RAW/LOG，解析 LOG 错误，并只读取规格中请求的 RAW traces。结果集中写入 `validation_summary.json`；其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、实际工具耗时和产物路径。缓存只允许复用未改变 NET/spec 且已通过的 preflight 状态，不能把旧 RAW/LOG 当成新仿真。原始 NET 含多个分析指令时，每个分析都会使用单独的派生 NET，不会把原始 NET 误当作某一个分析的精确输入。
+它会先执行不调用 LTspice 的 validation-spec dry-run，提前检查分析、metric、`.param`、corner 和依赖。每个真正执行的分析和 corner 都要求新的 RAW/LOG 并解析 LOG 错误；成功的 simulation evidence 写入 `simulation_evidence.json`，按精确 NET、分析指令、参数、模型依赖和 LTspice 配置绑定。只修改 metric、target、tolerance、trace 取点或报告格式时，会重新解析匹配的 RAW，不重新调用 LTspice；电路、分析、参数、模型依赖或执行文件改变时，相关 evidence 才失效。结果集中写入 `validation_summary.json`，其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、复用次数、实际工具耗时和产物路径。原始 NET 含多个分析指令时，每个分析都会使用单独的派生 NET，不会把原始 NET 误当作某一个分析的精确输入。
 
 RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需要文本调试时给 `scripts/run_ltspice.py` 增加 `--ascii`。
 
