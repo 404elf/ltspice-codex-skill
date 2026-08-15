@@ -1,0 +1,32 @@
+{
+  "preflight": true,
+  "analyses": [
+    {
+      "name": "tran",
+      "kind": "tran"
+    },
+    {
+      "name": "ac",
+      "kind": "ac",
+      "directive": ".ac dec 20 10 100k"
+    }
+  ],
+  "metrics": {
+    "output_peak_to_peak": {
+      "analysis": "tran",
+      "trace": "V(out)",
+      "kind": "peak_to_peak",
+      "min": 1.7,
+      "max": 2.1
+    },
+    "cutoff_3db": {
+      "analysis": "ac",
+      "trace": "V(out)",
+      "reference": "V(in)",
+      "kind": "fc_3db",
+      "response": "lowpass",
+      "target": 1000,
+      "tolerance_percent": 20
+    }
+  }
+}
