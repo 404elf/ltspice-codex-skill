@@ -11,6 +11,11 @@
 
    > Install and configure this LTspice simulation skill on this machine.
 
+如果已经安装旧版本，不需要重复安装，直接发送：
+> Update my installed `ltspice-sim-v2` Skill from https://github.com/404elf/ltspice-codex-skill to the latest `main` version. Preserve my LTspice installation, Weave setup, existing circuit outputs, and user configuration; update only the Skill files and required dependencies, then verify the new version.
+
+Codex 会更新 Skill 本身，并保留 LTspice、Weave 配置和已有电路输出。
+
 3. 配置完成后，直接描述要设计和仿真的电路，例如：
 
    > Design a 1 kHz Butterworth low-pass filter and simulate it with LTspice.

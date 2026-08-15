@@ -157,11 +157,46 @@ def _path_key(path: Path) -> str:
     return str(path.resolve()).casefold()
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _dependency_scope(requested: str, resolved: Path, root: Path) -> str:
+    """Classify how a dependency is expected to be found.
+
+    A path relative to the source NET is local.  An absolute path or an
+    existing path outside that directory is external.  A bare unresolved
+    token is allowed to come from LTspice's configured search path; its
+    contents cannot be fingerprinted here.
+    """
+
+    requested_path = Path(requested).expanduser()
+    if requested_path.is_absolute():
+        return "external"
+    if resolved.is_file():
+        return "local" if _is_within(resolved, root) else "external"
+    if len(requested_path.parts) == 1:
+        return "search_path"
+    return "local" if _is_within(resolved, root) else "external"
+
+
 def dependency_manifest(net_path: Path, text: str) -> dict[str, Any]:
-    """Collect direct and nested .lib/.include files and content hashes."""
+    """Collect dependencies and record whether their contents are verifiable.
+
+    Local files are resolved relative to the NET.  Known files outside that
+    directory are external dependencies.  Bare unresolved names are treated
+    as LTspice search-path dependencies rather than falsely reported as local
+    missing files.  Search-path and otherwise unreadable dependencies make
+    evidence non-reusable because their content is not bound to the key.
+    """
 
     records: list[dict[str, Any]] = []
     visited: set[str] = set()
+    source_root = net_path.resolve().parent
 
     def visit(parent: Path, body: str, origin: str) -> None:
         for line_number, line in enumerate(body.splitlines(), start=1):
@@ -172,20 +207,33 @@ def dependency_manifest(net_path: Path, text: str) -> dict[str, Any]:
             candidate = Path(requested).expanduser()
             resolved = candidate if candidate.is_absolute() else parent / candidate
             resolved = resolved.resolve()
+            scope = _dependency_scope(requested, resolved, source_root)
+            exists = resolved.is_file()
+            content_verified = False
+            digest: str | None = None
+            if exists:
+                try:
+                    digest = sha256_file(resolved)
+                    content_verified = True
+                except OSError:
+                    content_verified = False
             item: dict[str, Any] = {
                 "origin": origin,
                 "line": line_number,
                 "kind": parsed["kind"],
                 "requested": requested,
                 "resolved": str(resolved),
-                "exists": resolved.is_file(),
-                "sha256": None,
+                "scope": scope,
+                "classification": scope,
+                "resolved_by": scope,
+                "exists": exists,
+                "sha256": digest,
+                "content_verified": content_verified,
+                "verified": content_verified,
             }
-            if resolved.is_file():
-                item["sha256"] = sha256_file(resolved)
             records.append(item)
             key = _path_key(resolved)
-            if not resolved.is_file() or key in visited:
+            if not content_verified or key in visited:
                 continue
             visited.add(key)
             try:
@@ -195,13 +243,23 @@ def dependency_manifest(net_path: Path, text: str) -> dict[str, Any]:
             visit(resolved.parent, child, str(resolved))
 
     visit(net_path.resolve().parent, text, str(net_path.resolve()))
-    errors = [f"missing dependency: {item['requested']} ({item['origin']}:{item['line']})"
-              for item in records if not item["exists"]]
+    errors = [f"missing local dependency: {item['requested']} ({item['origin']}:{item['line']})"
+              for item in records if not item["exists"] and item["scope"] == "local"]
+    warnings = [
+        f"unverified {item['scope']} dependency: {item['requested']} ({item['origin']}:{item['line']})"
+        for item in records if not item["content_verified"] and item["scope"] != "local"
+    ]
+    unverified = [item["requested"] for item in records if not item["content_verified"]]
     return {
-        "version": 1,
+        "version": 2,
         "net": str(net_path.resolve()),
         "ok": not errors,
+        "binding": "unverified" if unverified else "verified",
         "errors": errors,
+        "warnings": warnings,
+        "content_verified": not unverified,
+        "reuse_allowed": not unverified,
+        "unverified": unverified,
         "files": records,
     }
 
@@ -252,6 +310,8 @@ def stage_net_with_dependencies(
     staged: dict[str, Path] = {}
     unique: list[Path] = []
     for item in manifest.get("files", []):
+        if not item.get("content_verified") or not item.get("exists"):
+            continue
         source = Path(str(item["resolved"]))
         key = _path_key(source)
         if key in staged:
@@ -287,7 +347,7 @@ def executable_fingerprint(executable: Path) -> dict[str, Any]:
     }
 
 
-def simulation_evidence_key(
+def simulation_evidence_payload(
     *,
     source_net_sha256: str,
     rendered_text: str,
@@ -296,10 +356,18 @@ def simulation_evidence_key(
     dependencies: dict[str, Any],
     executable: Path,
     ascii_output: bool = False,
-) -> str:
-    payload = {
-        "evidence_version": 1,
-        "source_net_sha256": source_net_sha256,
+) -> dict[str, Any]:
+    """Return the simulation-only identity used for evidence reuse.
+
+    The rendered analysis NET is the source-specific fingerprint.  The raw
+    source NET hash is intentionally not part of the identity because
+    render_analysis_net removes unrelated analysis directives before creating
+    temporary jobs.  This lets a changed AC directive invalidate AC evidence
+    without needlessly invalidating an unchanged DC job.
+    """
+
+    return {
+        "evidence_version": 3,
         "rendered_net_sha256": sha256_text(rendered_text),
         "analysis": {
             "kind": str(analysis.get("kind", "")).lower(),
@@ -310,7 +378,27 @@ def simulation_evidence_key(
         "ltspice": executable_fingerprint(executable),
         "settings": {"ascii_output": bool(ascii_output), "flags": ["-b", "-Run"]},
     }
-    return json_hash(payload)
+
+
+def simulation_evidence_key(
+    *,
+    source_net_sha256: str,
+    rendered_text: str,
+    analysis: dict[str, object],
+    params: dict[str, object],
+    dependencies: dict[str, Any],
+    executable: Path,
+    ascii_output: bool = False,
+) -> str:
+    return json_hash(simulation_evidence_payload(
+        source_net_sha256=source_net_sha256,
+        rendered_text=rendered_text,
+        analysis=analysis,
+        params=params,
+        dependencies=dependencies,
+        executable=executable,
+        ascii_output=ascii_output,
+    ))
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:
@@ -363,9 +451,32 @@ class EvidenceStore:
             shutil.copy2(valid_source, destination)
         return destination.is_file() and sha256_file(destination) == expected
 
-    def reuse(self, key: str, raw_destination: Path, log_destination: Path) -> dict[str, Any] | None:
+    @staticmethod
+    def _dependencies_are_reusable(simulation_input: dict[str, Any] | None) -> bool:
+        if not isinstance(simulation_input, dict):
+            return False
+        dependencies = simulation_input.get("dependencies")
+        if not isinstance(dependencies, dict):
+            return False
+        return bool(dependencies.get("reuse_allowed", True))
+
+    def reuse(
+        self,
+        key: str,
+        raw_destination: Path,
+        log_destination: Path,
+        *,
+        simulation_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if not self._dependencies_are_reusable(simulation_input):
+            return None
         record = self.records.get(key)
         if not isinstance(record, dict) or not record.get("simulation_ok"):
+            return None
+        if record.get("evidence_key") != key:
+            return None
+        recorded_input = record.get("simulation_input")
+        if not self._dependencies_are_reusable(recorded_input if isinstance(recorded_input, dict) else None):
             return None
         if not record.get("fresh_raw") or not record.get("fresh_log"):
             return None
@@ -390,6 +501,7 @@ class EvidenceStore:
             "fresh_log": True,
             "evidence_generated_at_utc": record.get("generated_at_utc"),
             "run_report": record.get("run_report"),
+            "simulation_input": record.get("simulation_input"),
         }
 
     def record_success(
@@ -400,8 +512,10 @@ class EvidenceStore:
         log: Path,
         run_report: Path | None,
         result: dict[str, Any],
+        simulation_input: dict[str, Any] | None = None,
     ) -> None:
         self.records[key] = {
+            "evidence_key": key,
             "simulation_ok": True,
             "fresh_raw": bool(result.get("fresh_raw")),
             "fresh_log": bool(result.get("fresh_log")),
@@ -412,5 +526,6 @@ class EvidenceStore:
             "run_report": str(run_report.resolve()) if run_report and run_report.is_file() else None,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": result.get("elapsed_seconds"),
+            "simulation_input": simulation_input or {},
         }
         self.save()

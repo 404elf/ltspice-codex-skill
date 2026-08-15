@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from validate_log import find_errors
+from validation_support import dependency_manifest, parse_dependency_line, rewrite_dependency_text
+
+
+ASC_DEPENDENCY_RE = re.compile(
+    r"(?P<prefix>!\s*)(?P<directive>\.(?:include|lib)\s+.+)$",
+    re.IGNORECASE,
+)
 
 
 def archive(path: Path, stamp: str) -> Path | None:
@@ -31,6 +39,68 @@ def build_command(executable: Path, input_path: Path, *, ascii_output: bool = Fa
         command.append("-ascii")
     command.append(str(input_path))
     return command
+
+
+def build_netlist_command(executable: Path, input_path: Path) -> list[str]:
+    """Ask LTspice itself to parse an ASC before its batch simulation."""
+
+    return [str(executable), "-netlist", str(input_path)]
+
+
+def stage_asc_with_dependencies(input_path: Path, stage_dir: Path) -> Path:
+    """Stage an ASC and its relative model files without changing the source."""
+
+    input_path = input_path.resolve()
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    text = input_path.read_text(encoding="utf-8", errors="replace")
+    directives: list[str] = []
+    for line in text.splitlines():
+        match = ASC_DEPENDENCY_RE.search(line)
+        if match and parse_dependency_line(match.group("directive").strip()):
+            directives.append(match.group("directive").strip())
+    manifest = dependency_manifest(input_path, "\n".join(directives) + ("\n" if directives else ""))
+    staged: dict[str, Path] = {}
+    used_targets: set[str] = set()
+    source_root = input_path.parent
+    unique_sources: list[Path] = []
+    for item in manifest.get("files", []):
+        if not item.get("content_verified") or not item.get("exists"):
+            continue
+        source = Path(str(item["resolved"])).resolve()
+        key = str(source).casefold()
+        if key in staged:
+            continue
+        try:
+            relative = source.relative_to(source_root)
+            target = stage_dir / relative
+        except ValueError:
+            target = stage_dir / "deps" / f"{len(unique_sources) + 1:03d}_{source.name}"
+        if str(target).casefold() in used_targets:
+            target = stage_dir / "deps" / f"{len(unique_sources) + 1:03d}_{source.name}"
+        staged[key] = target
+        used_targets.add(str(target).casefold())
+        unique_sources.append(source)
+    for source in unique_sources:
+        target = staged[str(source).casefold()]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        child = source.read_text(encoding="utf-8", errors="replace")
+        target.write_text(rewrite_dependency_text(child, source.parent, target.parent, staged), encoding="utf-8")
+
+    rewritten_lines: list[str] = []
+    for line in text.splitlines():
+        match = ASC_DEPENDENCY_RE.search(line)
+        if not match:
+            rewritten_lines.append(line)
+            continue
+        directive = match.group("directive").strip()
+        if not parse_dependency_line(directive):
+            rewritten_lines.append(line)
+            continue
+        rewritten = rewrite_dependency_text(directive, source_root, stage_dir, staged).strip()
+        rewritten_lines.append(line[:match.start("directive")] + rewritten + line[match.end("directive"):])
+    staged_input = stage_dir / input_path.name
+    staged_input.write_text("\n".join(rewritten_lines) + "\n", encoding="utf-8")
+    return staged_input
 
 
 def run_simulation(
@@ -56,9 +126,9 @@ def run_simulation(
         return {"ok": False, "input": str(input_path), "errors": ["LTspice executable missing"]}
 
     output_dir = input_path.parent
-    # LTspice writes a same-stem .net while batch-running an .asc.  Stage ASC
-    # validation in a temporary directory so that it can never overwrite the
-    # exact source NET.  Its RAW/LOG are copied back under a distinct stem.
+    # Stage ASC validation in a temporary directory. LTspice first netlists the
+    # staged ASC, then runs that generated NET, so the source NET is untouched.
+    # Its RAW/LOG are copied back under a distinct stem.
     is_asc = input_path.suffix.lower() == ".asc"
     stem = artifact_stem or (f"{input_path.stem}-asc" if is_asc else input_path.stem)
     raw_path = output_dir / f"{stem}.raw"
@@ -75,20 +145,19 @@ def run_simulation(
     run_dir = output_dir
     source_raw_path = raw_path
     source_log_path = log_path
+    pre_run_errors: list[str] = []
+    netlist_command: list[str] | None = None
+    netlist_returncode: int | None = None
+    netlist_stdout = ""
+    netlist_stderr = ""
     if is_asc:
         stage_dir = Path(tempfile.mkdtemp(prefix=f".{input_path.stem}-ltspice-", dir=str(output_dir)))
-        run_input = stage_dir / input_path.name
-        shutil.copy2(str(input_path), str(run_input))
-        source_raw_path = stage_dir / f"{run_input.stem}.raw"
-        source_log_path = stage_dir / f"{run_input.stem}.log"
-        run_dir = stage_dir
-    command = build_command(executable, run_input, ascii_output=ascii_output)
-    timed_out = False
-    try:
+        staged_asc = stage_asc_with_dependencies(input_path, stage_dir)
+        netlist_command = build_netlist_command(executable, staged_asc)
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(run_dir),
+            netlisted = subprocess.run(
+                netlist_command,
+                cwd=str(stage_dir),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -96,16 +165,48 @@ def run_simulation(
                 check=False,
                 timeout=timeout_seconds,
             )
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-            completed = subprocess.CompletedProcess(
-                command,
-                -1,
-                stdout=stdout,
-                stderr=stderr,
-            )
+            netlist_returncode = netlisted.returncode
+            netlist_stdout = netlisted.stdout
+            netlist_stderr = netlisted.stderr
+            run_input = staged_asc.with_suffix(".net")
+            if netlisted.returncode != 0 or not run_input.is_file():
+                pre_run_errors.append("LTspice ASC netlist generation failed")
+        except subprocess.TimeoutExpired:
+            pre_run_errors.append("LTspice ASC netlist generation timed out")
+            netlist_returncode = -1
+        source_raw_path = stage_dir / f"{run_input.stem}.raw"
+        source_log_path = stage_dir / f"{run_input.stem}.log"
+        run_dir = stage_dir
+    command = build_command(executable, run_input, ascii_output=ascii_output)
+    timed_out = False
+    try:
+        if pre_run_errors:
+            completed = subprocess.CompletedProcess(command, -1, stdout="", stderr="")
+        else:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(run_dir),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
+                stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+                completed = subprocess.CompletedProcess(
+                    command,
+                    -1,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            except OSError as exc:
+                completed = subprocess.CompletedProcess(command, -1, stdout="", stderr=str(exc))
+                pre_run_errors.append(str(exc))
         source_fresh_raw = source_raw_path.is_file() and source_raw_path.stat().st_mtime_ns >= started_ns
         source_fresh_log = source_log_path.is_file() and source_log_path.stat().st_mtime_ns >= started_ns
         if source_fresh_raw and source_raw_path.resolve() != raw_path.resolve():
@@ -125,7 +226,8 @@ def run_simulation(
     fresh_raw = raw_path.is_file() and raw_path.stat().st_mtime_ns >= started_ns
     fresh_log = log_path.is_file() and log_path.stat().st_mtime_ns >= started_ns
     log_text = log_path.read_text(encoding="utf-8", errors="replace") if fresh_log else ""
-    errors = find_errors(log_text) if fresh_log else ["fresh log file missing"]
+    errors = list(pre_run_errors)
+    errors.extend(find_errors(log_text) if fresh_log else ["fresh log file missing"])
     if not fresh_raw:
         errors.insert(0, "fresh raw file missing")
     if timed_out:
@@ -151,6 +253,10 @@ def run_simulation(
         "stale_log": str(stale_log) if stale_log else None,
         "stdout": completed.stdout,
         "stderr": completed.stderr,
+        "asc_netlist_command": netlist_command,
+        "asc_netlist_returncode": netlist_returncode,
+        "asc_netlist_stdout": netlist_stdout,
+        "asc_netlist_stderr": netlist_stderr,
     }
     if report_path is not None:
         report_path = report_path.resolve()
