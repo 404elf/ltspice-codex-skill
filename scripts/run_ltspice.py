@@ -34,7 +34,7 @@ def archive(path: Path, stamp: str) -> Path | None:
 
 
 def build_command(executable: Path, input_path: Path, *, ascii_output: bool = False) -> list[str]:
-    command = [str(executable), "-b", "-Run", "-sync"]
+    command = [str(executable), "-b", "-Run"]
     if ascii_output:
         command.append("-ascii")
     command.append(str(input_path))
@@ -64,6 +64,8 @@ def stage_asc_with_dependencies(input_path: Path, stage_dir: Path) -> Path:
     source_root = input_path.parent
     unique_sources: list[Path] = []
     for item in manifest.get("files", []):
+        if not item.get("content_verified") or not item.get("exists"):
+            continue
         source = Path(str(item["resolved"])).resolve()
         key = str(source).casefold()
         if key in staged:
@@ -284,4 +286,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

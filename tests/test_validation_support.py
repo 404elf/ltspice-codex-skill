@@ -13,6 +13,7 @@ from validation_support import (  # noqa: E402
     EvidenceStore,
     dependency_manifest,
     stage_net_with_dependencies,
+    simulation_evidence_payload,
     simulation_evidence_key,
 )
 
@@ -45,10 +46,20 @@ class ValidationSupportTests(unittest.TestCase):
             log.write_text("Simulation successful\n", encoding="utf-8")
             store = EvidenceStore(root / "simulation_evidence.json")
             result = {"ok": True, "fresh_raw": True, "fresh_log": True, "elapsed_seconds": 1.0}
-            store.record_success("key", raw=raw, log=log, run_report=None, result=result)
-            self.assertIsNotNone(store.reuse("key", root / "copy.raw", root / "copy.log"))
+            simulation_input = {"dependencies": {"reuse_allowed": True}}
+            store.record_success("key", raw=raw, log=log, run_report=None, result=result,
+                                 simulation_input=simulation_input)
+            self.assertIsNotNone(store.reuse("key", root / "copy.raw", root / "copy.log",
+                                              simulation_input=simulation_input))
             raw.write_bytes(b"changed")
-            self.assertIsNone(store.reuse("key", root / "copy2.raw", root / "copy2.log"))
+            self.assertIsNone(store.reuse("key", root / "copy2.raw", root / "copy2.log",
+                                          simulation_input=simulation_input))
+
+            unbound = EvidenceStore(root / "unbound.json")
+            raw.write_bytes(b"binary-raw")
+            unbound.record_success("key", raw=raw, log=log, run_report=None, result=result)
+            self.assertIsNone(unbound.reuse("key", root / "copy3.raw", root / "copy3.log",
+                                            simulation_input=simulation_input))
 
     def test_evidence_identity_is_analysis_specific(self) -> None:
         common = {
@@ -71,7 +82,58 @@ class ValidationSupportTests(unittest.TestCase):
         self.assertEqual(first, same_rendered)
         self.assertNotEqual(first, changed_rendered)
 
+    def test_evidence_fingerprint_uses_the_normal_batch_flags(self) -> None:
+        payload = simulation_evidence_payload(
+            source_net_sha256="source",
+            rendered_text="V1 in 0 1\n.op\n.end\n",
+            analysis={"kind": "op", "directive": ".op"},
+            params={},
+            dependencies={"reuse_allowed": True, "files": []},
+            executable=Path("LTspice.exe"),
+        )
+        self.assertEqual(payload["settings"]["flags"], ["-b", "-Run"])
+
+    def test_dependency_scope_marks_search_path_content_unverified_and_disables_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "source"
+            root.mkdir()
+            local = root / "local.lib"
+            local.write_text(".model DLOCAL D\n", encoding="utf-8")
+            external_dir = Path(folder) / "external"
+            external_dir.mkdir()
+            external = external_dir / "external.lib"
+            external.write_text(".model DEXT D\n", encoding="utf-8")
+            net = root / "circuit.net"
+            text = (
+                ".include local.lib\n"
+                f".include {external}\n"
+                ".include search_only.lib\n"
+                ".end\n"
+            )
+            net.write_text(text, encoding="utf-8")
+            manifest = dependency_manifest(net, text)
+            scopes = {item["requested"]: item["scope"] for item in manifest["files"]}
+            verified = {item["requested"]: item["content_verified"] for item in manifest["files"]}
+            self.assertEqual(scopes["local.lib"], "local")
+            self.assertEqual(scopes[str(external)], "external")
+            self.assertEqual(scopes["search_only.lib"], "search_path")
+            self.assertTrue(verified["local.lib"])
+            self.assertTrue(verified[str(external)])
+            self.assertFalse(verified["search_only.lib"])
+            self.assertTrue(manifest["ok"])
+            self.assertFalse(manifest["reuse_allowed"])
+
+            raw = root / "result.raw"
+            log = root / "result.log"
+            raw.write_bytes(b"raw")
+            log.write_text("Simulation successful\n", encoding="utf-8")
+            store = EvidenceStore(root / "evidence.json")
+            input_data = {"dependencies": manifest}
+            store.record_success("key", raw=raw, log=log, run_report=None,
+                                 result={"ok": True, "fresh_raw": True, "fresh_log": True},
+                                 simulation_input=input_data)
+            self.assertIsNone(store.reuse("key", root / "copy.raw", root / "copy.log", simulation_input=input_data))
+
 
 if __name__ == "__main__":
     unittest.main()
-

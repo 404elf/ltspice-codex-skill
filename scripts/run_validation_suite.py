@@ -40,7 +40,7 @@ from validation_support import (
 )
 
 
-SUITE_VERSION = "4"
+SUITE_VERSION = "5"
 PREFLIGHT_VERSION = "2"
 ANALYSIS_RE = re.compile(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", re.IGNORECASE)
 SUFFIXES = {
@@ -208,11 +208,14 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
     required_nets = spec.get("required_nets", [])
     if not isinstance(required_nets, list) or not all(isinstance(item, str) and item.strip() for item in required_nets):
         errors.append("required_nets must be a list of non-empty strings")
+    if "simulation_fail_fast" in spec and not isinstance(spec.get("simulation_fail_fast"), bool):
+        errors.append("simulation_fail_fast must be a boolean")
 
     params, param_errors = parameter_values(source_text)
     errors.extend(f"parameter parser: {item}" for item in param_errors)
     dependencies = dependency_manifest(net, source_text)
     errors.extend(str(item) for item in dependencies.get("errors", []))
+    warnings.extend(str(item) for item in dependencies.get("warnings", []))
     source_directives = source_analysis_directives(source_text)
     raw_analyses = spec.get("analyses", [])
     if raw_analyses is None:
@@ -684,8 +687,11 @@ def check_metric(value: float, spec: dict[str, object]) -> tuple[bool, str | Non
     if "target" in spec:
         target = float(spec["target"])
         tolerance = float(spec.get("tolerance_percent", 0.0)) / 100.0
+        if tolerance < 0:
+            return False, f"tolerance_percent {spec.get('tolerance_percent')} must not be negative"
         if abs(target) > np.finfo(float).tiny:
-            lower, upper = target * (1 - tolerance), target * (1 + tolerance)
+            delta = abs(target) * tolerance
+            lower, upper = target - delta, target + delta
         else:
             lower, upper = -tolerance, tolerance
         if not lower <= value <= upper:
@@ -771,7 +777,7 @@ def render_markdown(summary: dict[str, object], path: Path) -> None:
     if isinstance(metrics, dict) and metrics:
         for name, item in metrics.items():
             if isinstance(item, dict):
-                lines.append(f"- `{name}`: `{item.get('value')}` 鈥?{'PASS' if item.get('ok') else 'FAIL'}")
+                lines.append(f"- `{name}`: `{item.get('value')}` — {'PASS' if item.get('ok') else 'FAIL'}")
     else:
         lines.append("- No metric assertions requested.")
     lines.extend(["", "## Artifacts"])
@@ -800,11 +806,25 @@ def compact_agent_summary(summary: dict[str, object]) -> dict[str, object]:
                 compact["reason"] = item.get("reason")
             metrics[str(name)] = compact
     artifacts = summary.get("artifact_paths", {})
+    dry_run = summary.get("dry_run")
+    dry_run_summary = None
+    if isinstance(dry_run, dict):
+        dry_run_summary = {
+            "ok": bool(dry_run.get("ok")),
+            "errors": list(dry_run.get("errors", []) or []),
+            "warnings": list(dry_run.get("warnings", []) or []),
+        }
     return {
         "status": summary.get("status") or ("PASS" if summary.get("ok") else "FAIL"),
         "ok": bool(summary.get("ok")),
+        "dry_run": dry_run_summary,
         "ltspice_runs": int(summary.get("ltspice_runs", 0)),
         "evidence_reused": int(summary.get("evidence_reused", 0)),
+        "evidence_reuse_disabled": int(summary.get("evidence_reuse_disabled", 0)),
+        "convergence_retries": int(summary.get("convergence_retries", 0)),
+        "simulation_fail_fast": bool(summary.get("simulation_fail_fast", True)),
+        "simulation_fail_fast_triggered": bool(summary.get("simulation_fail_fast_triggered", False)),
+        "simulation_failures": list(summary.get("simulation_failures", []) or []),
         "analysis_count": len(summary.get("analyses", []) or []),
         "corner_count": len(summary.get("corners", []) or []),
         "failed_corners": list(summary.get("failed_corners", []) or []),
@@ -827,6 +847,7 @@ def main() -> int:
     parser.add_argument("--summary", type=Path, help="JSON summary path; defaults to output/validation_summary.json")
     parser.add_argument("--markdown", type=Path, help="Optional human-readable summary path")
     parser.add_argument("--dry-run", action="store_true", help="Run only static validation-spec checks; never invoke LTspice")
+    parser.add_argument("--verbose-json", action="store_true", help="Print the complete validation summary JSON to stdout")
     args = parser.parse_args()
 
     net = args.net.resolve()
@@ -855,6 +876,14 @@ def main() -> int:
         "log_error_status": {},
         "ltspice_runs": 0,
         "evidence_reused": 0,
+        "evidence_reuse_disabled": 0,
+        "convergence_retries": 0,
+        "convergence_retry_evidence_keys": [],
+        "simulation_fail_fast": True,
+        "simulation_fail_fast_triggered": False,
+        "simulation_fail_fast_after": None,
+        "simulation_failures": [],
+        "skipped_jobs": [],
         "model_readable_summary_count": 1,
         "artifact_paths": {
             "net": str(net),
@@ -874,6 +903,8 @@ def main() -> int:
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         summary["net_sha256"] = sha256(net)
         summary["spec_sha256"] = sha256(spec_path)
+        if isinstance(spec, dict):
+            summary["simulation_fail_fast"] = bool(spec.get("simulation_fail_fast", True))
 
         dry_run = dry_run_spec(source_text, net, spec)
         dry_run_path.write_text(json.dumps(dry_run, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -975,12 +1006,26 @@ def main() -> int:
                     dependencies=dependencies,
                     executable=args.ltspice,
                 )
-                key = json_hash(simulation_input)
-                result = evidence.reuse(key, raw_destination, log_destination)
+                base_evidence_key = json_hash(simulation_input)
+                final_evidence_key = base_evidence_key
+                final_simulation_input = simulation_input
+                convergence_retry_evidence_key: str | None = None
+                convergence_retry_attempted = False
+                if not dependencies.get("reuse_allowed", True):
+                    summary["evidence_reuse_disabled"] += 1
+                result = evidence.reuse(
+                    base_evidence_key,
+                    raw_destination,
+                    log_destination,
+                    simulation_input=simulation_input,
+                )
                 if result is not None:
                     summary["evidence_reused"] += 1
-                    result["evidence_key"] = key
+                    result["evidence_key"] = base_evidence_key
+                    result["base_evidence_key"] = base_evidence_key
                     result["simulation_input"] = simulation_input
+                    result["convergence_hints_used"] = False
+                    result["convergence_retry_attempted"] = False
                     result["run_report"] = str(report_destination) if report_destination.is_file() else result.get("run_report")
                 else:
                     retire_existing_artifact(raw_destination)
@@ -998,39 +1043,84 @@ def main() -> int:
                     )
                     summary["ltspice_runs"] += 1
                     if result.get("timed_out") and convergence_hints:
+                        convergence_retry_attempted = True
+                        summary["convergence_retries"] += 1
                         retry_text = inject_validation_hints(rendered_text, convergence_hints)
                         retry_dir = work / f"{prefix}-convergence-stage"
                         retry_net = stage_net_with_dependencies(net, retry_text, retry_dir, dependencies)
                         retry_report = work / f"{prefix}-convergence.run-report.json"
-                        result = run_simulation(
-                            retry_net, args.ltspice, retry_report,
-                            timeout_seconds=timeout_seconds,
+                        retry_input = simulation_evidence_payload(
+                            source_net_sha256=str(summary["net_sha256"]),
+                            rendered_text=retry_text,
+                            analysis=analysis_key,
+                            params=params,
+                            dependencies=dependencies,
+                            executable=args.ltspice,
                         )
-                        summary["ltspice_runs"] += 1
-                        result["convergence_hints_used"] = True
-                        run_report = retry_report
+                        retry_input["convergence"] = {
+                            "retry": True,
+                            "hints": list(convergence_hints),
+                        }
+                        convergence_retry_evidence_key = json_hash(retry_input)
+                        final_evidence_key = convergence_retry_evidence_key
+                        final_simulation_input = retry_input
+                        summary["convergence_retry_evidence_keys"].append(convergence_retry_evidence_key)
+                        retry_result = evidence.reuse(
+                            convergence_retry_evidence_key,
+                            raw_destination,
+                            log_destination,
+                            simulation_input=retry_input,
+                        )
+                        if retry_result is not None:
+                            summary["evidence_reused"] += 1
+                            result = retry_result
+                            result["reused"] = True
+                            result["convergence_hints_used"] = list(convergence_hints)
+                            result["convergence_retry_attempted"] = True
+                            run_report = Path(str(result.get("run_report", report_destination)))
+                        else:
+                            result = run_simulation(
+                                retry_net, args.ltspice, retry_report,
+                                timeout_seconds=timeout_seconds,
+                            )
+                            summary["ltspice_runs"] += 1
+                            result["convergence_hints_used"] = list(convergence_hints)
+                            result["convergence_retry_attempted"] = True
+                            run_report = retry_report
                     run_input = Path(str(result.get("run_input", job_net)))
-                    raw_source = Path(str(result.get("raw", run_input.with_suffix(".raw"))))
-                    log_source = Path(str(result.get("log", run_input.with_suffix(".log"))))
-                    copy_artifact(raw_source, raw_destination)
-                    copy_artifact(log_source, log_destination)
-                    copy_artifact(run_report, report_destination)
+                    if not result.get("reused"):
+                        raw_source = Path(str(result.get("raw", run_input.with_suffix(".raw"))))
+                        log_source = Path(str(result.get("log", run_input.with_suffix(".log"))))
+                        copy_artifact(raw_source, raw_destination)
+                        copy_artifact(log_source, log_destination)
+                        copy_artifact(run_report, report_destination)
                     result["raw"] = str(raw_destination) if raw_destination.is_file() else None
                     result["log"] = str(log_destination) if log_destination.is_file() else None
-                    result["run_report"] = str(report_destination) if report_destination.is_file() else None
-                    result["reused"] = False
-                    result["evidence_key"] = key
+                    if report_destination.is_file():
+                        result["run_report"] = str(report_destination)
+                    result["reused"] = bool(result.get("reused", False))
+                    result["evidence_key"] = final_evidence_key
+                    result["base_evidence_key"] = base_evidence_key
+                    result["convergence_retry_evidence_key"] = convergence_retry_evidence_key
+                    result["convergence_hints_used"] = list(result.get("convergence_hints_used", []) or [])
+                    result["convergence_retry_attempted"] = convergence_retry_attempted
+                    result["original_evidence_key"] = base_evidence_key
+                    result["actual_evidence_key"] = final_evidence_key
+                    result["simulation_input"] = final_simulation_input
                     if result.get("ok") and raw_destination.is_file() and log_destination.is_file():
                         evidence.record_success(
-                            key,
+                            final_evidence_key,
                             raw=raw_destination,
                             log=log_destination,
                             run_report=report_destination,
                             result=result,
-                            simulation_input=simulation_input,
+                            simulation_input=final_simulation_input,
                         )
-                        result["evidence_generated_at_utc"] = evidence.records[key].get("generated_at_utc")
+                        result["evidence_generated_at_utc"] = evidence.records[final_evidence_key].get("generated_at_utc")
 
+                result["original_evidence_key"] = str(result.get("original_evidence_key") or base_evidence_key)
+                result["actual_evidence_key"] = str(result.get("actual_evidence_key") or final_evidence_key)
+                result["convergence_hints_used"] = list(result.get("convergence_hints_used", []) or [])
                 raw_path = Path(str(result.get("raw", raw_destination)))
                 log_path = Path(str(result.get("log", log_destination)))
                 log_errors = list(result.get("errors", []))
@@ -1056,6 +1146,15 @@ def main() -> int:
                         }
                 elif metric_specs:
                     metric_failures = list(metric_specs)
+                    metric_results = {
+                        name: {
+                            "value": None,
+                            "ok": False,
+                            "reason": "simulation failed; metric was not evaluated",
+                            "spec": metric,
+                        }
+                        for name, metric in metric_specs.items()
+                    }
                 for name, value in metric_results.items():
                     summary["metrics"][f"{job_name}.{name}"] = value
                 failures = log_errors + metric_failures
@@ -1064,11 +1163,13 @@ def main() -> int:
                     "kind": kind,
                     "aliases": list(analysis.get("aliases", [])),
                     "corner": corner,
+                    "simulation_ok": bool(result.get("ok")),
+                    "metric_failures": metric_failures,
                     "ok": bool(result.get("ok")) and not metric_failures,
                     "runtime_seconds": 0.0 if result.get("reused") else result.get("elapsed_seconds", round(time.perf_counter() - job_start, 6)),
                     "run": {
                         key_name: result.get(key_name)
-                        for key_name in ("returncode", "fresh_raw", "fresh_log", "errors", "stale_raw", "stale_log", "timed_out", "convergence_hints_used", "reused", "evidence_key", "evidence_generated_at_utc")
+                        for key_name in ("returncode", "fresh_raw", "fresh_log", "errors", "stale_raw", "stale_log", "timed_out", "convergence_hints_used", "convergence_retry_attempted", "convergence_retry_evidence_key", "base_evidence_key", "original_evidence_key", "actual_evidence_key", "reused", "evidence_key", "evidence_generated_at_utc")
                     },
                     "metrics": metric_results,
                     "artifacts": {
@@ -1080,21 +1181,34 @@ def main() -> int:
                     "failures": failures,
                 }
 
+            def collect_job(job: dict[str, object], *, corner: bool = False) -> bool:
+                if not job["ok"]:
+                    all_failures.extend([f"{job['name']}:{item}" for item in job["failures"]])
+                if not job.get("simulation_ok"):
+                    summary["simulation_failures"].append(str(job["name"]))
+                    if summary["simulation_fail_fast"] and not summary["simulation_fail_fast_triggered"]:
+                        summary["simulation_fail_fast_triggered"] = True
+                        summary["simulation_fail_fast_after"] = str(job["name"])
+                        return True
+                return False
+
+            stop_after_simulation_failure = False
             primary_job = execute_job(
                 str(primary["name"]), primary, {},
                 exact=can_use_exact_source(source_directives, primary),
             )
             summary["analyses"].append(primary_job)
-            if not primary_job["ok"]:
-                all_failures.extend([f"{primary_job['name']}:{item}" for item in primary_job["failures"]])
+            stop_after_simulation_failure = collect_job(primary_job)
 
             for analysis in analyses:
                 if analysis is primary:
                     continue
+                if stop_after_simulation_failure:
+                    summary["skipped_jobs"].append(str(analysis["name"]))
+                    continue
                 job = execute_job(str(analysis["name"]), analysis, {}, exact=False)
                 summary["analyses"].append(job)
-                if not job["ok"]:
-                    all_failures.extend([f"{job['name']}:{item}" for item in job["failures"]])
+                stop_after_simulation_failure = collect_job(job)
 
             corners = expand_corners(
                 source_text,
@@ -1110,6 +1224,10 @@ def main() -> int:
             corner_analysis = primary
             corner_start = time.perf_counter()
             for corner in corners:
+                if stop_after_simulation_failure:
+                    chosen = corner.get("analysis") or corner_analysis.get("name")
+                    summary["skipped_jobs"].append(f"{corner['name']}__{chosen}")
+                    continue
                 chosen = corner.get("analysis")
                 if chosen:
                     chosen_lower = str(chosen).lower()
@@ -1124,7 +1242,8 @@ def main() -> int:
                 summary["corners"].append(job)
                 if not job["ok"]:
                     summary["failed_corners"].append(str(corner["name"]))
-                    all_failures.extend([f"{job_name}:{item}" for item in job["failures"]])
+                if collect_job(job, corner=True):
+                    stop_after_simulation_failure = True
             corner_seconds = time.perf_counter() - corner_start if corners else 0.0
 
         analysis_times = {str(item["name"]): item.get("runtime_seconds", 0) for item in summary["analyses"]}
@@ -1149,18 +1268,19 @@ def main() -> int:
         summary["timing"] = {"deterministic_tool_total_seconds": round(time.perf_counter() - started_perf, 6)}
 
     summary["status"] = summary.get("status") or ("PASS" if summary["ok"] else "FAIL")
-    summary["agent_summary"] = compact_agent_summary(summary)
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     summary["artifact_paths"]["validation_summary"] = str(summary_path)
     if markdown_path:
         render_markdown(summary, markdown_path)
         summary["artifact_paths"]["verification_summary"] = str(markdown_path)
-        summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    summary["agent_summary"] = compact_agent_summary(summary)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if args.verbose_json:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+    else:
+        print(json.dumps(summary["agent_summary"], ensure_ascii=False, separators=(",", ":")))
     return 0 if summary["ok"] else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

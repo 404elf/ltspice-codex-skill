@@ -16,7 +16,7 @@ class LTspiceCommandTests(unittest.TestCase):
     def test_binary_raw_is_the_default(self) -> None:
         command = build_command(Path("LTspice.exe"), Path("circuit.net"))
         self.assertNotIn("-ascii", command)
-        self.assertIn("-sync", command)
+        self.assertNotIn("-sync", command)
 
     def test_ascii_raw_is_opt_in(self) -> None:
         command = build_command(Path("LTspice.exe"), Path("circuit.net"), ascii_output=True)
@@ -40,4 +40,3 @@ class LTspiceCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

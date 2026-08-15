@@ -104,4 +104,3 @@ validation suite 会先静态检查 validation spec，再执行 LTspice。成功
 ## 许可证
 
 本项目代码采用 GPL-3.0-or-later。Weave、PyLTSpice/spicelib、elkjs 和 LTspice 的许可与归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-

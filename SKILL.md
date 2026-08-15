@@ -1,80 +1,78 @@
 ---
 name: ltspice-sim-v2
-description: Portable Codex Skill for generating, simulating, validating, measuring, and schematizing LTspice circuits with deterministic RAW/LOG checks and Weave NET-to-ASC verification. Use when Codex needs to design or modify LTspice circuits after this repository is installed on a machine with LTspice.
+description: Portable Codex Skill for generating, simulating, validating, measuring, and schematizing LTspice circuits with deterministic RAW/LOG checks and Weave NET-to-ASC verification.
 ---
 
 # LTspice Codex Skill
 
-Use this skill for LTspice circuit work. Codex is the AI layer: generate or modify the exact SPICE netlist, run the configured LTspice executable, validate fresh RAW/LOG outputs, optionally parse RAW data, and use the configured Weave CLI for requested schematics. Do not use Streamlit, OpenRouter, another LLM API, or any legacy LTspice automation project.
+## Purpose / setup
 
-Read the machine configuration written by `bootstrap.py` before running tools. It contains the detected LTspice executable, Weave CLI directory, Python executable, and output root. Never hardcode machine-specific paths in a circuit artifact or this skill.
+Use this skill to create or modify the exact LTspice `.net`/`.cir`, run the configured LTspice, measure results, and optionally create a Weave schematic. Keep legacy LTSPICE-AI and the old LTspice skill out of the runtime path. Never use another LLM, Streamlit, or a manually drawn ASC.
 
-Use one output folder per circuit below the configured output root. Keep the exact `.net`, fresh `.raw/.log`, optional `.asc`, Weave result, plots, and summary together.
+If `.ltspice-codex-config.json` is missing or invalid, automatically run `py -3 bootstrap.py` from the skill repository root, then read the generated configuration. Stop only when setup is blocked by a missing external installation or permission. Use configured paths; do not hardcode machine-specific paths in circuit artifacts or this skill.
 
-## First-time setup
-
-When this Skill is being installed or its local configuration file is missing or invalid, run `py -3 bootstrap.py` from the Skill repository root before doing circuit work. The bootstrap script detects LTspice and Node.js, creates the isolated Python environment, obtains Weave and its npm dependency, writes `.ltspice-codex-config.json`, and runs the RC smoke test. Then read that configuration and use its paths. Do not ask the user to manually assemble Python or Weave dependencies unless setup is blocked by a missing external installation or permission.
+Use one output folder per circuit below the configured output root. Keep the exact NET, current RAW/LOG, optional ASC, Weave result, plots, and summary together.
 
 ## Modes
 
-- `AUTO` is the default. Choose the lightest sufficient mode and escalate only after a failure, missing RAW, LOG error, inconsistent result, Weave failure, or suspicious topology.
-- `QUICK`: passive/trivial circuits, parameter-only changes, or validated topology. Run the exact NET, require fresh RAW/LOG and an error-free LOG, convert the exact NET, and require Weave `MATCH`; do not run the ASC.
-- `STANDARD`: ordinary new analog circuits and ordinary tolerance analysis. Run its complete requested plan once, with topology checks, engineering measurements, and Weave `MATCH`.
-- `STRICT`: multistage, feedback-sensitive, switching, power, strongly nonlinear, high-risk, abnormal-result, or explicitly fully validated circuits. Run its complete requested plan once, including floating-input/rail/short/open/feedback checks, saturation checks, Weave `MATCH`, and one final LTspice run of the generated ASC.
-- `BATCH`: repeated variants or sweeps. Avoid repeated topology audits and ASC generation for every variant; parse requested outputs and deeply validate failures, outliers, and final candidates.
+- `AUTO`: choose the lightest sufficient final plan and escalate only after a failed gate, suspicious topology, or inconsistent result.
+- `QUICK`: run the exact NET with fresh RAW/LOG and an error-free LOG, then convert it with Weave and require `MATCH`; do not run the ASC.
+- `STANDARD`: one complete nominal/tolerance plan through the validation suite, plus Weave `MATCH`.
+- `STRICT`: one complete plan with high-risk topology checks, saturation checks, Weave `MATCH`, and one final LTspice smoke run of the generated ASC.
+- `BATCH`: validate variants in one suite; generate ASC only for selected/final candidates.
 
-These are final validation plans, not a `QUICK` -> `STANDARD` -> `STRICT` ladder. Do not run a duplicate nominal QUICK before a STANDARD or STRICT suite that already covers the nominal analyses. `accuracy-sensitive` alone does not force STRICT; choose STANDARD with tolerance analysis for a normal linear circuit unless the topology or request warrants STRICT.
+`QUICK`, `STANDARD`, `STRICT`, and `BATCH` are final plans, not a ladder. Do not run a duplicate nominal QUICK before a STANDARD or STRICT suite that already covers the required analyses. `accuracy-sensitive` alone does not force STRICT.
+
+## Execution policy
+
+- Plan once before tools: topology, values, analyses, metrics, tolerance strategy, and required gates.
+- Prefer one validation-suite call. The suite owns spec dry-run, dependency handling, fresh RAW/LOG checks, metrics, corners, and evidence reuse.
+- Read the compact suite summary or `agent_summary` first. Do not reopen proven RAW/LOG files or recalculate passing metrics unless the summary is missing, contradictory, or failed. Use `--verbose-json` only when full stdout JSON is explicitly needed.
+- Let one analysis prove as many requirements as its data supports. Add an analysis or corner only when the existing evidence cannot prove the requirement.
+- Reduce corners only when endpoint worst-case directions are clear; otherwise let the deterministic suite handle the corner plan without per-corner reasoning.
+- Reuse only successful evidence bound to the current simulation inputs. Metric/target/trace/report changes may reparse matching evidence; changed NET, analysis, parameters, dependencies, executable, or run settings invalidate affected evidence.
+- A simulation-level failure stops dependent analyses/corners. A metric failure does not invalidate successful independent simulations. Diagnose and rerun only invalidated work.
+- Stop when the requested engineering results and required gates pass. Do not add optional checks after PASS.
 
 ## Required workflow
 
-1. Generate or modify the `.net`/`.cir` file with explicit ground node `0`, unique reference designators, an analysis directive, and `.end`. Do not manually author ASC coordinates.
-2. Before any formal validation suite, run its pure static validation-spec dry-run. It must reject invalid schema, missing or conflicting analysis directives, `.op` axis metrics, invalid `.dc start=stop`, missing traces/references, unknown corner parameters, unsupported `.param` syntax, and unsafe corner plans before LTspice is called. Use `--dry-run` to inspect the result without running LTspice.
-3. Separate simulation evidence from metric evaluation. A successful fresh RAW/LOG is keyed by the exact source/rendered NET, analysis directive, parameters, recursive `.lib`/`.include` content, LTspice executable fingerprint, and run settings. Store this in `simulation_evidence.json`. A metric, target, tolerance, trace selection, or summary-format change must reuse only a matching hash-bound successful evidence record and reparse the RAW; it must not invoke LTspice. Never treat an unbound or failed RAW/LOG as evidence.
-4. Before every new LTspice run, use `scripts/run_ltspice.py`; it archives stale same-stem RAW/LOG files, runs LTspice, requires newly-created RAW and LOG files, and validates the fresh LOG. RAW is binary by default; use `--ascii` only for text diagnostics. When the input is an ASC, the helper stages it in a temporary directory so LTspice cannot overwrite the source NET; the additional validation artifacts use an `-asc` stem.
-5. Do not treat LTspice exit code 0 alone as success. Reject unresolved parser/simulation failures such as `Error`, `Fatal`, `No such`, `Unknown`, `Singular matrix`, `Voltage not found`, and aborted-simulation messages. A direct-Newton fallback is acceptable only when the LOG confirms successful Gmin operating-point recovery.
-6. For STANDARD and STRICT, after the dry-run passes, run `scripts/run_validation_suite.py` once for the complete final plan. It executes requested analyses and corners, validates fresh RAW/LOG files, extracts only requested traces, evaluates metrics, records timing, and writes one `validation_summary.json`. One analysis should prove as many requirements as its RAW permits; do not create one LTspice job per metric.
-7. Use mathematically justified corner reduction when possible. With `"corner_strategy": "monotonic"` and explicit `"monotonic"` directions, the suite runs only the proven endpoint extremes. Use Cartesian corners for nonlinear/coupled cases or when explicitly requested. A failed metric invalidates only the evidence it depends on; unchanged analyses remain reusable.
-8. Derived analysis NETs preserve recursive `.lib`/`.include` dependencies by staging them with usable relative paths. Validation-only convergence hints are injected only into a temporary retry NET after a finite timeout; do not add UIC by default or pollute the source-of-truth NET.
-9. After the final NET passes, and only then, pass that exact NET to `scripts/weave_convert.py`. It fingerprints the NET before and after conversion, refuses a changed NET, runs round-trip verification, and accepts only `MATCH`. Do not run Weave for intermediate parameter or corner variants.
-10. For STRICT, run the generated ASC with `scripts/run_ltspice.py` as an additional final validation. This confirms ASC parsing/model/directive startup; it does not require rerunning the complete engineering suite. The final result is successful only when the suite, Weave `MATCH`, and ASC validation pass.
-11. Use `scripts/parse_raw.py` with the configured Python executable when numerical RAW parsing is needed outside the suite. Use plots only when they materially help the requested result.
+1. Generate or update the NET with explicit ground `0`, unique references, required analyses, and `.end`. The NET is the electrical source of truth; never hand-author ASC coordinates.
+2. For `STANDARD` or `STRICT`, write the validation spec and call `scripts/run_validation_suite.py` once for the final plan. For `QUICK`, use the direct LTspice helper when a suite is unnecessary.
+3. Count a simulation only when the helper/suite confirms newly-created RAW and LOG files and a clean LOG. Exit code 0 alone is not success; parser, fatal, unresolved-model, singular-matrix, or aborted-simulation errors fail the run. Old artifacts never satisfy the current run.
+4. Read the compact result and inspect only failed or contradictory evidence. Do not treat an unverified or stale artifact as current.
+5. After the final NET passes required LTspice validation, call Weave once on that exact NET. Accept the ASC only when round-trip verification returns `MATCH`; never edit its coordinates manually.
+6. In `STRICT`, run the generated ASC once with LTspice. This is a final parse/startup validation, not a second engineering suite.
 
-## Agent execution policy
+## Failure handling
 
-- Plan once before the first tool call: topology, values, analyses, metrics, tolerance strategy, and final validation gates.
-- Prefer one deterministic validation-suite call and one compact summary over separate Agent calls for DC, AC, transient, corners, RAW, or LOG inspection.
-- Read `validation_summary.json` -> `agent_summary` first and treat a passing summary as authoritative. Do not reopen proven RAW/LOG files, call `parse_raw.py`, or recalculate the same metric unless the summary is missing, contradictory, or failed.
-- Do not reason about corners individually. Define the plan once and let the suite generate, simulate, evaluate, and summarize every corner.
-- On failure, inspect only the failed analysis/metric and its relevant error, then rerun only invalidated evidence.
-- Stop immediately when requested engineering requirements and required gates pass. Optional checks, plots, and extra reports are not reasons to continue.
+Do not report success if the final NET, fresh RAW/LOG, clean LOG, required metrics, Weave `MATCH`, or STRICT ASC smoke gate fails. Preserve the source NET and revise only the failed design or metric condition. Do not restart already-proven independent analyses.
 
-## Artifact policies
+## Finalization / artifacts
 
-`.net` is the source of truth. For ordinary parameter-only modifications, update the existing NET, rerun LTspice and replace the current RAW/LOG, then regenerate and replace the ASC from that exact updated NET using Weave so NET and ASC represent the same current state. Do not create versioned copies unless history preservation is explicitly requested. In `BATCH`, generate ASC only for selected/final candidates.
+For ordinary parameter-only changes, update the existing NET, rerun LTspice and replace the current RAW/LOG, then regenerate and replace the ASC from that exact NET with Weave. NET and ASC must describe the same current state. Do not create versioned copies unless history preservation is explicitly requested.
 
-After every successful run, always report this concise list:
+After every successful run, report concisely:
 
-- Output directory: `<folder>`
-- Final `.net`: `<path>`
-- Final `.asc`: `<path>` (if generated)
-- Final `.raw`: `<path>`
-- Final `.log`: `<path>`
-- Weave verification result: `<path>` (if generated)
+- output directory
+- final `.net` path
+- final `.asc` path, if generated
+- final `.raw` path
+- final `.log` path
+- Weave verification result path, if generated
 
-Also report requested measurements and relevant validation status. Do not claim success when a required gate fails. `MATCH` proves connectivity equivalence only; it does not prove SPICE syntax, electrical correctness, or engineering-target compliance.
+Also report requested measurements and validation status. `MATCH` proves connectivity equivalence only; it does not prove electrical correctness or target compliance.
 
-The validation suite keeps a small preflight cache keyed only by the NET hash, required nets, and preflight version. Metric/spec changes therefore do not invalidate topology preflight. Its summary reports actual LTspice calls and reused evidence so performance changes remain auditable.
+## Helper commands
 
-## Helpers
+Use the Python executable and paths from `.ltspice-codex-config.json`:
 
-Run these using the configured Python executable:
+```powershell
+python scripts/run_ltspice.py --input <net-or-asc> --ltspice <configured-executable> [--ascii]
+python scripts/run_validation_suite.py --net <net> --spec <validation-spec.json> --ltspice <configured-executable>
+python scripts/weave_convert.py --net <exact-net> --weave-dir <configured-weave-cli> --asc <asc> --force
+python scripts/parse_raw.py --raw <raw> --trace <name>
+python scripts/validate_log.py --log <log>
+python scripts/preflight.py --net <net> --required-net <name>
+```
 
-- `scripts/run_ltspice.py --input <net-or-asc> --ltspice <configured-executable> [--ascii]`
-- `scripts/run_validation_suite.py --net <net> --spec <validation-spec.json> --ltspice <configured-executable> [--markdown <summary.md>]`
-- `scripts/validate_log.py --log <log>`
-- `scripts/parse_raw.py --raw <raw> [--trace <name>]`
-- `scripts/weave_convert.py --net <exact-net> --weave-dir <configured-weave-cli> --asc <asc> --force`
-- `scripts/preflight.py --net <net> [--required-net <name>]`
-
-Weave owns NET-to-ASC conversion. Never guess or hand-edit ASC symbols, wires, or coordinates.
-
+Weave owns NET-to-ASC conversion. Use `--ascii` only for text diagnostics; binary RAW is the normal path.
