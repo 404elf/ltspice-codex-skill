@@ -22,11 +22,13 @@ Use one output folder per circuit below the configured output root. Keep the exa
 ## Required workflow
 
 1. Generate or modify the `.net`/`.cir` file with explicit ground node `0`, unique reference designators, an analysis directive, and `.end`. Do not manually author ASC coordinates.
-2. Before every run, use `scripts/run_ltspice.py`; it archives stale same-stem RAW/LOG files, runs LTspice, requires newly-created RAW and LOG files, and validates the fresh LOG.
+2. Before every run, use `scripts/run_ltspice.py`; it archives stale same-stem RAW/LOG files, runs LTspice, requires newly-created RAW and LOG files, and validates the fresh LOG. When the input is an ASC, the helper stages it in a temporary directory so LTspice cannot overwrite the source NET; the additional validation artifacts use an `-asc` stem.
 3. Do not treat LTspice exit code 0 alone as success. Reject unresolved parser/simulation failures such as `Error`, `Fatal`, `No such`, `Unknown`, `Singular matrix`, `Voltage not found`, and aborted-simulation messages. A direct-Newton fallback is acceptable only when the LOG confirms successful Gmin operating-point recovery.
-4. For normal circuit runs, pass the exact successfully simulated NET to `scripts/weave_convert.py`. It fingerprints the NET before and after conversion, refuses a changed NET, runs round-trip verification, and accepts only `MATCH`.
-5. For STRICT, run the generated ASC with `scripts/run_ltspice.py` as an additional final validation. The final result is successful only when NET validation, Weave `MATCH`, and ASC validation pass.
-6. Use `scripts/parse_raw.py` with the configured Python executable when numerical RAW parsing is needed. Use plots only when they materially help the requested result.
+4. For STANDARD and STRICT, after design and preflight are stable, write a small JSON validation specification and run `scripts/run_validation_suite.py` once. It executes requested analyses and deterministic corners/sweeps, validates fresh RAW/LOG files, extracts only requested traces, evaluates metrics, records wall-clock timings, and writes one `validation_summary.json`. Do not ask the model to inspect each corner or RAW file individually.
+5. Read the suite summary. If it fails, revise only the failed design or metric checks and rerun the suite. The suite cache may reuse unchanged preflight state only; it must never treat an old RAW/LOG as a fresh simulation.
+6. After the final NET passes, and only then, pass that exact NET to `scripts/weave_convert.py`. It fingerprints the NET before and after conversion, refuses a changed NET, runs round-trip verification, and accepts only `MATCH`. Do not run Weave for intermediate parameter or corner variants.
+7. For STRICT, run the generated ASC with `scripts/run_ltspice.py` as an additional final validation. The final result is successful only when the suite, Weave `MATCH`, and ASC validation pass.
+8. Use `scripts/parse_raw.py` with the configured Python executable when numerical RAW parsing is needed outside the suite. Use plots only when they materially help the requested result.
 
 ## Artifact policies
 
@@ -48,6 +50,7 @@ Also report requested measurements and relevant validation status. Do not claim 
 Run these using the configured Python executable:
 
 - `scripts/run_ltspice.py --input <net-or-asc> --ltspice <configured-executable>`
+- `scripts/run_validation_suite.py --net <net> --spec <validation-spec.json> --ltspice <configured-executable> [--markdown <summary.md>]`
 - `scripts/validate_log.py --log <log>`
 - `scripts/parse_raw.py --raw <raw> [--trace <name>]`
 - `scripts/weave_convert.py --net <exact-net> --weave-dir <configured-weave-cli> --asc <asc> --force`
