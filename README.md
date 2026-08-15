@@ -1,12 +1,12 @@
 # LTspice Codex Skill v2
 
-## Validation planning and evidence reuse
+## 验证规划与仿真证据复用
 
-The validation suite performs a static specification dry-run before it calls LTspice. It rejects incompatible analyses and metrics, unsafe `.param`/corner edits, missing traces or references, invalid `.dc` sweeps, and missing `.lib`/`.include` dependencies early.
+validation suite 会在调用 LTspice 前先执行纯静态的 validation spec 检查，提前发现不兼容的分析与 metric、不安全的 `.param`/corner 修改、缺少 trace 或 reference、无效的 `.dc` sweep，以及缺失的 `.lib`/`.include` 依赖。
 
-Successful simulation evidence is stored in `simulation_evidence.json` and is bound to the exact NET/rendered analysis, parameters, dependency contents, LTspice executable, and run settings. Changing only a metric, target, tolerance, trace selection, or report format reuses the matching fresh RAW/LOG and reparses it without another LTspice call. A changed circuit, model dependency, analysis directive, parameter, or executable invalidates the affected evidence.
+成功的仿真证据会保存到 `simulation_evidence.json`，并绑定精确的 NET、派生分析、参数、模型依赖内容、LTspice 可执行文件和运行设置。如果只修改 metric、目标值、容差、trace 取点或报告格式，就复用匹配的 fresh RAW/LOG 并重新解析，不再次调用 LTspice。只有电路、模型依赖、分析指令、参数或执行文件发生变化时，相关证据才会失效。
 
-Relative `.lib`/`.include` files are automatically staged for temporary analysis NETs. Use `corner_strategy: "monotonic"` only when the declared endpoint directions are mathematically justified; otherwise use Cartesian corners. `QUICK`, `STANDARD`, and `STRICT` are final plans, not a sequence of repeated nominal runs. `STRICT` still retains Weave `MATCH` and the final generated-ASC LTspice validation.
+相对路径的 `.lib`/`.include` 文件会自动为临时分析 NET 建立可用副本。只有能够从数学上证明端点方向时，才使用 `corner_strategy: "monotonic"`；否则使用 Cartesian corners。`QUICK`、`STANDARD` 和 `STRICT` 是最终验证计划，不是逐级重复执行的流程。`STRICT` 仍然保留 Weave `MATCH` 和生成 ASC 后的 LTspice 最终验证。
 
 这是一个独立、可移植的 Codex Skill，用于根据自然语言生成 LTspice 网表、执行仿真、校验 RAW/LOG、测量指标，并用 Weave 将最终 NET 转换为 LTspice ASC 原理图。
 
