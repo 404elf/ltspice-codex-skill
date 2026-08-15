@@ -11,6 +11,10 @@ Read the machine configuration written by `bootstrap.py` before running tools. I
 
 Use one output folder per circuit below the configured output root. Keep the exact `.net`, fresh `.raw/.log`, optional `.asc`, Weave result, plots, and summary together.
 
+## First-time setup
+
+When this Skill is being installed or its local configuration file is missing or invalid, run `py -3 bootstrap.py` from the Skill repository root before doing circuit work. The bootstrap script detects LTspice and Node.js, creates the isolated Python environment, obtains Weave and its npm dependency, writes `.ltspice-codex-config.json`, and runs the RC smoke test. Then read that configuration and use its paths. Do not ask the user to manually assemble Python or Weave dependencies unless setup is blocked by a missing external installation or permission.
+
 ## Modes
 
 - `AUTO` is the default. Choose the lightest sufficient mode and escalate only after a failure, missing RAW, LOG error, inconsistent result, Weave failure, or suspicious topology.
