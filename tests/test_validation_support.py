@@ -13,6 +13,7 @@ from validation_support import (  # noqa: E402
     EvidenceStore,
     dependency_manifest,
     stage_net_with_dependencies,
+    simulation_evidence_key,
 )
 
 
@@ -49,6 +50,28 @@ class ValidationSupportTests(unittest.TestCase):
             raw.write_bytes(b"changed")
             self.assertIsNone(store.reuse("key", root / "copy2.raw", root / "copy2.log"))
 
+    def test_evidence_identity_is_analysis_specific(self) -> None:
+        common = {
+            "rendered_text": "R1 in out 1k\n.ac dec 10 10 10k\n.end\n",
+            "analysis": {"kind": "ac", "directive": ".ac dec 10 10 10k"},
+            "params": {},
+            "dependencies": {"version": 1, "files": []},
+            "executable": Path("LTspice.exe"),
+        }
+        first = simulation_evidence_key(source_net_sha256="first", **common)
+        same_rendered = simulation_evidence_key(source_net_sha256="second", **common)
+        changed_rendered = simulation_evidence_key(
+            source_net_sha256="second",
+            rendered_text=common["rendered_text"].replace("10k", "20k"),
+            analysis=common["analysis"],
+            params=common["params"],
+            dependencies=common["dependencies"],
+            executable=common["executable"],
+        )
+        self.assertEqual(first, same_rendered)
+        self.assertNotEqual(first, changed_rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
+

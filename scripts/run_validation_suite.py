@@ -35,12 +35,12 @@ from validation_support import (
     parameter_values,
     replace_parameters as support_replace_parameters,
     sha256_file,
-    simulation_evidence_key,
+    simulation_evidence_payload,
     stage_net_with_dependencies,
 )
 
 
-SUITE_VERSION = "3"
+SUITE_VERSION = "4"
 PREFLIGHT_VERSION = "2"
 ANALYSIS_RE = re.compile(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", re.IGNORECASE)
 SUFFIXES = {
@@ -176,10 +176,13 @@ def _validate_dc_directive(directive: str) -> str | None:
     try:
         start = parse_number(tokens[2])
         stop = parse_number(tokens[3])
+        increment = parse_number(tokens[4])
     except ValueError:
-        return ".dc start/stop must be numeric for dry-run validation"
+        return ".dc start/stop/increment must be numeric for dry-run validation"
     if start == stop:
         return ".dc start=stop creates no sweep axis; use .op or a real sweep"
+    if increment == 0:
+        return ".dc increment must not be zero"
     return None
 
 
@@ -276,6 +279,20 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
             errors.append(f"metric {metric_name}: {kind} needs an analysis axis and cannot use .op")
         if kind in {"value_at", "value_at_x", "gain_at", "gain_at_frequency"} and "x" not in raw_metric:
             errors.append(f"metric {metric_name}: x is required for {kind}")
+        for numeric_field in ("x", "target", "tolerance_percent", "min", "max"):
+            if numeric_field in raw_metric:
+                try:
+                    numeric_value = parse_number(raw_metric[numeric_field])
+                    if numeric_field == "tolerance_percent" and numeric_value < 0:
+                        errors.append(f"metric {metric_name}: tolerance_percent must not be negative")
+                except ValueError:
+                    errors.append(f"metric {metric_name}: {numeric_field} must be numeric")
+        if "min" in raw_metric and "max" in raw_metric:
+            try:
+                if parse_number(raw_metric["min"]) > parse_number(raw_metric["max"]):
+                    errors.append(f"metric {metric_name}: min must not exceed max")
+            except ValueError:
+                pass
         if kind in {"fc_3db", "cutoff_3db"} and str(raw_metric.get("response", "lowpass")).lower() not in {"lowpass", "highpass"}:
             errors.append(f"metric {metric_name}: response must be lowpass or highpass")
 
@@ -500,6 +517,8 @@ def _monotonic_corners(
                     use_high = extreme == "max"
                 elif direction in {"inverse", "decreasing", "negative"}:
                     use_high = extreme == "min"
+                elif direction in {"constant", "none", "irrelevant"}:
+                    use_high = False
                 else:
                     raise ValueError(f"invalid monotonic direction for {metric_name}.{original}: {direction}")
                 params[original] = high if use_high else low
@@ -752,7 +771,7 @@ def render_markdown(summary: dict[str, object], path: Path) -> None:
     if isinstance(metrics, dict) and metrics:
         for name, item in metrics.items():
             if isinstance(item, dict):
-                lines.append(f"- `{name}`: `{item.get('value')}` — {'PASS' if item.get('ok') else 'FAIL'}")
+                lines.append(f"- `{name}`: `{item.get('value')}` 鈥?{'PASS' if item.get('ok') else 'FAIL'}")
     else:
         lines.append("- No metric assertions requested.")
     lines.extend(["", "## Artifacts"])
@@ -762,6 +781,37 @@ def render_markdown(summary: dict[str, object], path: Path) -> None:
             if value:
                 lines.append(f"- {name}: `{value}`")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def compact_agent_summary(summary: dict[str, object]) -> dict[str, object]:
+    """Build the small result surface an Agent should read first."""
+
+    metrics: dict[str, object] = {}
+    raw_metrics = summary.get("metrics", {})
+    if isinstance(raw_metrics, dict):
+        for name, item in raw_metrics.items():
+            if not isinstance(item, dict):
+                continue
+            compact: dict[str, object] = {
+                "value": item.get("value"),
+                "ok": bool(item.get("ok")),
+            }
+            if not compact["ok"] and item.get("reason"):
+                compact["reason"] = item.get("reason")
+            metrics[str(name)] = compact
+    artifacts = summary.get("artifact_paths", {})
+    return {
+        "status": summary.get("status") or ("PASS" if summary.get("ok") else "FAIL"),
+        "ok": bool(summary.get("ok")),
+        "ltspice_runs": int(summary.get("ltspice_runs", 0)),
+        "evidence_reused": int(summary.get("evidence_reused", 0)),
+        "analysis_count": len(summary.get("analyses", []) or []),
+        "corner_count": len(summary.get("corners", []) or []),
+        "failed_corners": list(summary.get("failed_corners", []) or []),
+        "metrics": metrics,
+        "artifact_paths": dict(artifacts) if isinstance(artifacts, dict) else {},
+        "failures": list(summary.get("failures", []) or []),
+    }
 
 
 class DryRunComplete(Exception):
@@ -882,7 +932,9 @@ def main() -> int:
             summary["preflight"] = preflight
             summary["artifact_paths"]["preflight"] = str(preflight_path)
             if not preflight_result_ok(preflight):
-                all_failures.append("preflight:failed")
+                summary["failures"] = ["preflight:failed"]
+                summary["status"] = "PREFLIGHT_FAIL"
+                raise DryRunComplete()
 
         dependencies = dependency_manifest(net, source_text)
         evidence = EvidenceStore(evidence_path)
@@ -915,7 +967,7 @@ def main() -> int:
                 raw_destination = output / f"{prefix}.raw"
                 log_destination = output / f"{prefix}.log"
                 report_destination = output / f"{prefix}.run-report.json"
-                key = simulation_evidence_key(
+                simulation_input = simulation_evidence_payload(
                     source_net_sha256=str(summary["net_sha256"]),
                     rendered_text=rendered_text,
                     analysis=analysis_key,
@@ -923,10 +975,12 @@ def main() -> int:
                     dependencies=dependencies,
                     executable=args.ltspice,
                 )
+                key = json_hash(simulation_input)
                 result = evidence.reuse(key, raw_destination, log_destination)
                 if result is not None:
                     summary["evidence_reused"] += 1
                     result["evidence_key"] = key
+                    result["simulation_input"] = simulation_input
                     result["run_report"] = str(report_destination) if report_destination.is_file() else result.get("run_report")
                 else:
                     retire_existing_artifact(raw_destination)
@@ -973,6 +1027,7 @@ def main() -> int:
                             log=log_destination,
                             run_report=report_destination,
                             result=result,
+                            simulation_input=simulation_input,
                         )
                         result["evidence_generated_at_utc"] = evidence.records[key].get("generated_at_utc")
 
@@ -1093,6 +1148,8 @@ def main() -> int:
         summary["ok"] = False
         summary["timing"] = {"deterministic_tool_total_seconds": round(time.perf_counter() - started_perf, 6)}
 
+    summary["status"] = summary.get("status") or ("PASS" if summary["ok"] else "FAIL")
+    summary["agent_summary"] = compact_agent_summary(summary)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     summary["artifact_paths"]["validation_summary"] = str(summary_path)
@@ -1106,3 +1163,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

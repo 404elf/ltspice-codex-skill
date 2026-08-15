@@ -81,6 +81,16 @@ class ValidationSuiteUnitTests(unittest.TestCase):
         self.assertTrue(any("duplicate .param" in item for item in report["errors"]))
         self.assertTrue(any("start=stop" in item for item in report["errors"]))
 
+    def test_dry_run_rejects_invalid_metric_numbers(self) -> None:
+        net = ".param R=1k\nV1 in 0 1\nR1 in 0 {R}\n.ac dec 10 10 10k\n.end\n"
+        spec = {"analyses": [{"name": "ac", "kind": "ac"}], "metrics": {
+            "gain": {"analysis": "ac", "trace": "V(in)", "kind": "value_at", "x": "not-a-number", "min": 2, "max": 1},
+        }}
+        report = dry_run_spec(net, Path("invalid-metric.net"), spec)
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("x must be numeric" in item for item in report["errors"]))
+        self.assertTrue(any("min must not exceed max" in item for item in report["errors"]))
+
     def test_monotonic_corner_plan_reduces_two_parameters_to_two_endpoints(self) -> None:
         source = ".param R=1k C=100n\n.tran 0 1m\n.end\n"
         cartesian = expand_corners(source, {"R": [-10, 10], "C": [-10, 10]})
@@ -105,3 +115,4 @@ class ValidationSuiteUnitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

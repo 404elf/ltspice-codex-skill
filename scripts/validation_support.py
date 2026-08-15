@@ -287,6 +287,39 @@ def executable_fingerprint(executable: Path) -> dict[str, Any]:
     }
 
 
+def simulation_evidence_payload(
+    *,
+    source_net_sha256: str,
+    rendered_text: str,
+    analysis: dict[str, object],
+    params: dict[str, object],
+    dependencies: dict[str, Any],
+    executable: Path,
+    ascii_output: bool = False,
+) -> dict[str, Any]:
+    """Return the simulation-only identity used for evidence reuse.
+
+    The rendered analysis NET is the source-specific fingerprint.  The raw
+    source NET hash is intentionally not part of the identity because
+    render_analysis_net removes unrelated analysis directives before creating
+    temporary jobs.  This lets a changed AC directive invalidate AC evidence
+    without needlessly invalidating an unchanged DC job.
+    """
+
+    return {
+        "evidence_version": 2,
+        "rendered_net_sha256": sha256_text(rendered_text),
+        "analysis": {
+            "kind": str(analysis.get("kind", "")).lower(),
+            "directive": str(analysis.get("directive", "")).strip(),
+        },
+        "parameters": {str(key).lower(): str(value) for key, value in sorted(params.items(), key=lambda item: str(item[0]).lower())},
+        "dependencies": dependencies,
+        "ltspice": executable_fingerprint(executable),
+        "settings": {"ascii_output": bool(ascii_output), "flags": ["-b", "-Run", "-sync"]},
+    }
+
+
 def simulation_evidence_key(
     *,
     source_net_sha256: str,
@@ -297,20 +330,15 @@ def simulation_evidence_key(
     executable: Path,
     ascii_output: bool = False,
 ) -> str:
-    payload = {
-        "evidence_version": 1,
-        "source_net_sha256": source_net_sha256,
-        "rendered_net_sha256": sha256_text(rendered_text),
-        "analysis": {
-            "kind": str(analysis.get("kind", "")).lower(),
-            "directive": str(analysis.get("directive", "")).strip(),
-        },
-        "parameters": {str(key).lower(): str(value) for key, value in sorted(params.items(), key=lambda item: str(item[0]).lower())},
-        "dependencies": dependencies,
-        "ltspice": executable_fingerprint(executable),
-        "settings": {"ascii_output": bool(ascii_output), "flags": ["-b", "-Run"]},
-    }
-    return json_hash(payload)
+    return json_hash(simulation_evidence_payload(
+        source_net_sha256=source_net_sha256,
+        rendered_text=rendered_text,
+        analysis=analysis,
+        params=params,
+        dependencies=dependencies,
+        executable=executable,
+        ascii_output=ascii_output,
+    ))
 
 
 def _atomic_write_json(path: Path, payload: object) -> None:
@@ -390,6 +418,7 @@ class EvidenceStore:
             "fresh_log": True,
             "evidence_generated_at_utc": record.get("generated_at_utc"),
             "run_report": record.get("run_report"),
+            "simulation_input": record.get("simulation_input"),
         }
 
     def record_success(
@@ -400,8 +429,10 @@ class EvidenceStore:
         log: Path,
         run_report: Path | None,
         result: dict[str, Any],
+        simulation_input: dict[str, Any] | None = None,
     ) -> None:
         self.records[key] = {
+            "evidence_key": key,
             "simulation_ok": True,
             "fresh_raw": bool(result.get("fresh_raw")),
             "fresh_log": bool(result.get("fresh_log")),
@@ -412,5 +443,7 @@ class EvidenceStore:
             "run_report": str(run_report.resolve()) if run_report and run_report.is_file() else None,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": result.get("elapsed_seconds"),
+            "simulation_input": simulation_input or {},
         }
         self.save()
+

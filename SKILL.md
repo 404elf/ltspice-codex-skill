@@ -39,6 +39,15 @@ These are final validation plans, not a `QUICK` -> `STANDARD` -> `STRICT` ladder
 10. For STRICT, run the generated ASC with `scripts/run_ltspice.py` as an additional final validation. This confirms ASC parsing/model/directive startup; it does not require rerunning the complete engineering suite. The final result is successful only when the suite, Weave `MATCH`, and ASC validation pass.
 11. Use `scripts/parse_raw.py` with the configured Python executable when numerical RAW parsing is needed outside the suite. Use plots only when they materially help the requested result.
 
+## Agent execution policy
+
+- Plan once before the first tool call: topology, values, analyses, metrics, tolerance strategy, and final validation gates.
+- Prefer one deterministic validation-suite call and one compact summary over separate Agent calls for DC, AC, transient, corners, RAW, or LOG inspection.
+- Read `validation_summary.json` -> `agent_summary` first and treat a passing summary as authoritative. Do not reopen proven RAW/LOG files, call `parse_raw.py`, or recalculate the same metric unless the summary is missing, contradictory, or failed.
+- Do not reason about corners individually. Define the plan once and let the suite generate, simulate, evaluate, and summarize every corner.
+- On failure, inspect only the failed analysis/metric and its relevant error, then rerun only invalidated evidence.
+- Stop immediately when requested engineering requirements and required gates pass. Optional checks, plots, and extra reports are not reasons to continue.
+
 ## Artifact policies
 
 `.net` is the source of truth. For ordinary parameter-only modifications, update the existing NET, rerun LTspice and replace the current RAW/LOG, then regenerate and replace the ASC from that exact updated NET using Weave so NET and ASC represent the same current state. Do not create versioned copies unless history preservation is explicitly requested. In `BATCH`, generate ASC only for selected/final candidates.
@@ -68,3 +77,4 @@ Run these using the configured Python executable:
 - `scripts/preflight.py --net <net> [--required-net <name>]`
 
 Weave owns NET-to-ASC conversion. Never guess or hand-edit ASC symbols, wires, or coordinates.
+
