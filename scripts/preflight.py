@@ -16,9 +16,15 @@ def terminals(tokens: list[str]) -> list[str]:
         return []
     prefix = tokens[0][0].upper()
     counts = {"R": 2, "C": 2, "L": 2, "D": 2, "V": 2, "I": 2, "B": 2,
-              "E": 4, "F": 2, "G": 4, "H": 2}
+              "E": 4, "F": 2, "G": 4, "H": 2, "J": 3, "M": 4}
     if prefix == "X":
         return tokens[1:-1]
+    if prefix == "Q":
+        # Q C B E [S] model [parameters].  The model token is the last
+        # positional token before any name=value parameters.
+        first_parameter = next((index for index, token in enumerate(tokens) if "=" in token), len(tokens))
+        model_index = first_parameter - 1 if first_parameter < len(tokens) else len(tokens) - 1
+        return tokens[1:max(1, model_index)]
     return tokens[1:1 + counts.get(prefix, 0)]
 
 

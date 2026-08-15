@@ -26,7 +26,7 @@ When this Skill is being installed or its local configuration file is missing or
 ## Required workflow
 
 1. Generate or modify the `.net`/`.cir` file with explicit ground node `0`, unique reference designators, an analysis directive, and `.end`. Do not manually author ASC coordinates.
-2. Before every run, use `scripts/run_ltspice.py`; it archives stale same-stem RAW/LOG files, runs LTspice, requires newly-created RAW and LOG files, and validates the fresh LOG. When the input is an ASC, the helper stages it in a temporary directory so LTspice cannot overwrite the source NET; the additional validation artifacts use an `-asc` stem.
+2. Before every run, use `scripts/run_ltspice.py`; it archives stale same-stem RAW/LOG files, runs LTspice, requires newly-created RAW and LOG files, and validates the fresh LOG. RAW is binary by default; use `--ascii` only for text diagnostics. When the input is an ASC, the helper stages it in a temporary directory so LTspice cannot overwrite the source NET; the additional validation artifacts use an `-asc` stem.
 3. Do not treat LTspice exit code 0 alone as success. Reject unresolved parser/simulation failures such as `Error`, `Fatal`, `No such`, `Unknown`, `Singular matrix`, `Voltage not found`, and aborted-simulation messages. A direct-Newton fallback is acceptable only when the LOG confirms successful Gmin operating-point recovery.
 4. For STANDARD and STRICT, after design and preflight are stable, write a small JSON validation specification and run `scripts/run_validation_suite.py` once. It executes requested analyses and deterministic corners/sweeps, validates fresh RAW/LOG files, extracts only requested traces, evaluates metrics, records wall-clock timings, and writes one `validation_summary.json`. Do not ask the model to inspect each corner or RAW file individually.
 5. Read the suite summary. If it fails, revise only the failed design or metric checks and rerun the suite. The suite cache may reuse unchanged preflight state only; it must never treat an old RAW/LOG as a fresh simulation.
@@ -53,7 +53,7 @@ Also report requested measurements and relevant validation status. Do not claim 
 
 Run these using the configured Python executable:
 
-- `scripts/run_ltspice.py --input <net-or-asc> --ltspice <configured-executable>`
+- `scripts/run_ltspice.py --input <net-or-asc> --ltspice <configured-executable> [--ascii]`
 - `scripts/run_validation_suite.py --net <net> --spec <validation-spec.json> --ltspice <configured-executable> [--markdown <summary.md>]`
 - `scripts/validate_log.py --log <log>`
 - `scripts/parse_raw.py --raw <raw> [--trace <name>]`

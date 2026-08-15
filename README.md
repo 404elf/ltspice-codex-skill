@@ -19,7 +19,7 @@ Codex 会根据本仓库中的 `bootstrap.py` 自动完成配置。初始化脚�
 
 - 检测本机 LTspice；
 - 创建 Skill 专用 `.venv` 并安装 `requirements.txt`；
-- 获取 Weave CLI 并安装其 npm 依赖；
+- 获取固定提交的 Weave CLI，必要时生成 lockfile，并安装固定版本的 `elkjs`；
 - 写入本机配置文件 `.ltspice-codex-config.json`；
 - 执行一次全新的 RC 冒烟测试。
 
@@ -58,7 +58,9 @@ validation suite 的核心调用形式为：
   --markdown <output-directory>/validation_summary.md
 ```
 
-它会为每个分析和确定性 corner 执行一次 LTspice，要求每次都产生新的 RAW/LOG，解析 LOG 错误，并只读取规格中请求的 RAW traces。结果集中写入 `validation_summary.json`；其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、实际工具耗时和产物路径。缓存只允许复用未改变 NET/spec 的 preflight 状态，不能把旧 RAW/LOG 当成新仿真。
+它会为每个分析和确定性 corner 执行一次 LTspice，要求每次都产生新的 RAW/LOG，解析 LOG 错误，并只读取规格中请求的 RAW traces。结果集中写入 `validation_summary.json`；其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、实际工具耗时和产物路径。缓存只允许复用未改变 NET/spec 且已通过的 preflight 状态，不能把旧 RAW/LOG 当成新仿真。原始 NET 含多个分析指令时，每个分析都会使用单独的派生 NET，不会把原始 NET 误当作某一个分析的精确输入。
+
+RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需要文本调试时给 `scripts/run_ltspice.py` 增加 `--ascii`。
 
 最终 NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；`STRICT` 还会运行 Weave 生成的 ASC。ASC 校验会在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`。
 

@@ -10,7 +10,9 @@ sys.path.insert(0, str(SCRIPTS))
 
 from run_validation_suite import (  # noqa: E402
     check_metric,
+    can_use_exact_source,
     expand_corners,
+    preflight_result_ok,
     render_analysis_net,
     replace_parameters,
 )
@@ -41,6 +43,15 @@ class ValidationSuiteUnitTests(unittest.TestCase):
         ok, reason = check_metric(7.0, {"max": 6})
         self.assertFalse(ok)
         self.assertIn("> max", reason or "")
+
+    def test_preflight_failure_is_not_a_passing_gate(self) -> None:
+        self.assertFalse(preflight_result_ok({"ok": False, "exit_code": 1}))
+        self.assertTrue(preflight_result_ok({"ok": True, "exit_code": 0}))
+
+    def test_original_net_is_not_used_as_exact_job_for_multiple_analyses(self) -> None:
+        source = [("tran", ".tran 0 1m"), ("ac", ".ac dec 10 10 10k")]
+        self.assertFalse(can_use_exact_source(source, {"kind": "tran"}))
+        self.assertTrue(can_use_exact_source([source[0]], {"kind": "tran"}))
 
 
 if __name__ == "__main__":

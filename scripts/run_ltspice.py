@@ -25,14 +25,27 @@ def archive(path: Path, stamp: str) -> Path | None:
     return target
 
 
+def build_command(executable: Path, input_path: Path, *, ascii_output: bool = False) -> list[str]:
+    command = [str(executable), "-b", "-Run"]
+    if ascii_output:
+        command.append("-ascii")
+    command.append(str(input_path))
+    return command
+
+
 def run_simulation(
     input_path: Path,
     executable: Path,
     report_path: Path | None = None,
     *,
     artifact_stem: str | None = None,
+    ascii_output: bool = False,
 ) -> dict[str, object]:
-    """Run one LTspice job and return its deterministic validation record."""
+    """Run one LTspice job and return its deterministic validation record.
+
+    LTspice writes binary RAW files by default.  ASCII RAW output remains
+    available for diagnostics through ``ascii_output=True``.
+    """
 
     input_path = input_path.resolve()
     executable = executable.resolve()
@@ -68,7 +81,7 @@ def run_simulation(
         source_raw_path = stage_dir / f"{run_input.stem}.raw"
         source_log_path = stage_dir / f"{run_input.stem}.log"
         run_dir = stage_dir
-    command = [str(executable), "-b", "-Run", "-ascii", str(run_input)]
+    command = build_command(executable, run_input, ascii_output=ascii_output)
     try:
         completed = subprocess.run(
             command,
@@ -134,9 +147,13 @@ def main() -> int:
     parser.add_argument("--ltspice", required=True, type=Path)
     parser.add_argument("--report", type=Path, help="Optional JSON report path")
     parser.add_argument("--artifact-stem", help="Optional output RAW/LOG stem")
+    parser.add_argument("--ascii", action="store_true", help="Request ASCII RAW output instead of the default binary RAW")
     args = parser.parse_args()
 
-    result = run_simulation(args.input, args.ltspice, args.report, artifact_stem=args.artifact_stem)
+    result = run_simulation(
+        args.input, args.ltspice, args.report,
+        artifact_stem=args.artifact_stem, ascii_output=args.ascii,
+    )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0 if result.get("ok") else 1
 

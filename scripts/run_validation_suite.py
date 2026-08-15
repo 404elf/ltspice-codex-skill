@@ -30,7 +30,7 @@ from PyLTSpice import RawRead
 from run_ltspice import run_simulation
 
 
-SUITE_VERSION = "1"
+SUITE_VERSION = "2"
 ANALYSIS_RE = re.compile(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", re.IGNORECASE)
 PARAM_RE = re.compile(r"(\.param\s+)([A-Za-z_][\w]*)\s*=\s*([^\s;]+)", re.IGNORECASE)
 SUFFIXES = {
@@ -89,6 +89,26 @@ def source_analysis_directives(text: str) -> list[tuple[str, str]]:
         if match:
             found.append((match.group(1).lower(), line.strip()))
     return found
+
+
+def can_use_exact_source(source_directives: list[tuple[str, str]], analysis: dict[str, object]) -> bool:
+    """Return whether the original NET is exactly this one requested analysis."""
+
+    if len(source_directives) != 1:
+        return False
+    source_kind, source_line = source_directives[0]
+    if str(analysis.get("kind", "")).lower() != source_kind:
+        return False
+    requested_line = str(analysis.get("directive") or "").strip()
+    return not requested_line or requested_line.casefold() == source_line.casefold()
+
+
+def preflight_result_ok(result: dict[str, object] | None) -> bool:
+    """Treat a missing optional preflight as neutral, but gate enabled checks."""
+
+    if result is None:
+        return True
+    return bool(result.get("ok")) and int(result.get("exit_code", 0)) == 0
 
 
 def normalize_analysis(item: object) -> dict[str, object]:
@@ -322,6 +342,7 @@ def run_preflight(net: Path, output: Path, required_nets: list[str], reuse: dict
     else:
         result = {"ok": False, "errors": [completed.stderr or completed.stdout or "preflight failed"]}
     result["exit_code"] = completed.returncode
+    result["ok"] = bool(result.get("ok")) and completed.returncode == 0
     result["elapsed_seconds"] = round(elapsed, 6)
     return result, elapsed
 
@@ -412,6 +433,7 @@ def main() -> int:
         summary["net_sha256"] = sha256(net)
         summary["spec_sha256"] = sha256(spec_path)
 
+        all_failures: list[str] = []
         preflight = None
         preflight_seconds = 0.0
         if bool(spec.get("preflight", False)):
@@ -422,7 +444,9 @@ def main() -> int:
                 try:
                     state = json.loads(state_path.read_text(encoding="utf-8"))
                     if state.get("preflight_key") == state_key:
-                        reuse = state.get("preflight")
+                        cached = state.get("preflight")
+                        if isinstance(cached, dict) and preflight_result_ok(cached):
+                            reuse = cached
                 except (OSError, json.JSONDecodeError):
                     reuse = None
             preflight_path = output / f"{net.stem}.preflight.json"
@@ -431,6 +455,8 @@ def main() -> int:
                 state_path.write_text(json.dumps({"preflight_key": state_key, "preflight": preflight}, indent=2) + "\n", encoding="utf-8")
             summary["preflight"] = preflight
             summary["artifact_paths"]["preflight"] = str(preflight_path)
+            if not preflight_result_ok(preflight):
+                all_failures.append("preflight:failed")
 
         analyses = [normalize_analysis(item) for item in spec.get("analyses", [])]
         if not analyses:
@@ -439,13 +465,13 @@ def main() -> int:
                 analyses = [{"name": directives[0][0], "kind": directives[0][0]}]
             else:
                 raise ValueError("spec has no analyses and NET has no analysis directive")
-        source_kinds = [kind for kind, _ in source_analysis_directives(source_text)]
+        source_directives = source_analysis_directives(source_text)
+        source_kinds = [kind for kind, _ in source_directives]
         exact_kind = source_kinds[0] if len(source_kinds) == 1 else None
         primary = analyses[0]
         if exact_kind and any(str(item["kind"]).lower() == exact_kind for item in analyses):
             primary = next(item for item in analyses if str(item["kind"]).lower() == exact_kind)
 
-        all_failures: list[str] = []
         with tempfile.TemporaryDirectory(prefix=".validation-suite-", dir=str(output)) as work_text:
             work = Path(work_text)
 
@@ -506,7 +532,10 @@ def main() -> int:
                 }
                 return job
 
-            primary_job = execute_job(str(primary["name"]), primary, {}, exact=True)
+            primary_job = execute_job(
+                str(primary["name"]), primary, {},
+                exact=can_use_exact_source(source_directives, primary),
+            )
             summary["analyses"].append(primary_job)
             if not primary_job["ok"]:
                 all_failures.extend([f"{primary_job['name']}:{item}" for item in primary_job["failures"]])
@@ -542,7 +571,11 @@ def main() -> int:
             "deterministic_tool_total_seconds": round(time.perf_counter() - started_perf, 6),
         }
         summary["failures"] = all_failures
-        summary["ok"] = not all_failures and all(bool(item.get("ok")) for item in summary["analyses"] + summary["corners"])
+        summary["ok"] = (
+            preflight_result_ok(preflight)
+            and not all_failures
+            and all(bool(item.get("ok")) for item in summary["analyses"] + summary["corners"])
+        )
     except Exception as exc:
         summary["failures"] = [str(exc)]
         summary["ok"] = False
