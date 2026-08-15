@@ -1,13 +1,5 @@
 # LTspice Codex Skill v2
 
-## Validation planning and evidence reuse
-
-The validation suite performs a static specification dry-run before it calls LTspice. It rejects incompatible analyses and metrics, unsafe `.param`/corner edits, missing traces or references, invalid `.dc` sweeps, and missing `.lib`/`.include` dependencies early.
-
-Successful simulation evidence is stored in `simulation_evidence.json` and is bound to the exact NET/rendered analysis, parameters, dependency contents, LTspice executable, and run settings. Changing only a metric, target, tolerance, trace selection, or report format reuses the matching fresh RAW/LOG and reparses it without another LTspice call. A changed circuit, model dependency, analysis directive, parameter, or executable invalidates the affected evidence.
-
-Relative `.lib`/`.include` files are automatically staged for temporary analysis NETs. Use `corner_strategy: "monotonic"` only when the declared endpoint directions are mathematically justified; otherwise use Cartesian corners. `QUICK`, `STANDARD`, and `STRICT` are final plans, not a sequence of repeated nominal runs. `STRICT` still retains Weave `MATCH` and the final generated-ASC LTspice validation.
-
 这是一个独立、可移植的 Codex Skill，用于根据自然语言生成 LTspice 网表、执行仿真、校验 RAW/LOG、测量指标，并用 Weave 将最终 NET 转换为 LTspice ASC 原理图。
 
 本仓库不包含 LTspice 安装包、专有模型或任何旧版 LTSPICE-AI 文件。
@@ -92,6 +84,10 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 - `*-asc.raw` / `*-asc.log`：STRICT 模式下生成的 ASC 附加 LTspice 校验结果。
 
 普通参数修改直接更新已有 NET，并替换对应 RAW/LOG，再从该 NET 替换 ASC；除非明确要求保留历史，否则不创建版本化目录。BATCH 只为选中的最终候选生成 ASC。
+
+## 验证机制（可选阅读）
+
+validation suite 会先静态检查 validation spec，再执行 LTspice。成功的 RAW/LOG 会按当前 NET、分析、参数和模型依赖绑定到 `simulation_evidence.json`；只修改 metric、目标值或容差时，会重新解析已有结果，不重复调用 LTspice。详细规则由 Skill 自动处理，普通用户无需手动配置。
 
 ## 验证边界
 
