@@ -23,9 +23,11 @@ from run_validation_suite import (  # noqa: E402
     dry_run_spec,
     evaluate_metrics,
     expand_corners,
+    expand_tolerance_groups,
     preflight_result_ok,
     render_analysis_net,
     replace_parameters,
+    validate_model_policy,
 )
 
 
@@ -48,6 +50,23 @@ class ValidationSuiteUnitTests(unittest.TestCase):
         self.assertEqual(len(corners), 4)
         self.assertEqual(corners[0]["params"]["R"], 9500.0)
         self.assertAlmostEqual(corners[0]["params"]["C"], 0.9e-9)
+
+    def test_tolerance_groups_route_corners_to_the_declared_analysis(self) -> None:
+        source = ".param R=1k C=100n\n.tran 0 1m\n.ac dec 10 10 10k\n.end\n"
+        corners = expand_tolerance_groups(source, [
+            {"analysis": "ac", "corners": {"R": [-5, 5]}},
+            {"analysis": "tran", "corners": {"C": [-10, 10]}},
+        ])
+        self.assertEqual(len(corners), 4)
+        self.assertEqual({item["analysis"] for item in corners}, {"ac", "tran"})
+
+    def test_real_device_policy_rejects_known_generic_model(self) -> None:
+        errors = validate_model_policy(
+            "XU1 in 0 vdd vss out UniversalOpAmp2\n.op\n.end\n",
+            "real_device_required",
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("generic model UniversalOpAmp2 detected", errors[0])
 
     def test_metric_bounds_are_enforced(self) -> None:
         self.assertEqual(check_metric(5.0, {"min": 4, "max": 6}), (True, None))
@@ -250,6 +269,30 @@ class ValidationSuiteUnitTests(unittest.TestCase):
             self.assertEqual(compact["status"], "FAIL")
             summary = json.loads((output / "validation_summary.json").read_text(encoding="utf-8"))
             self.assertTrue(any("start=stop" in item for item in summary["failures"]))
+
+    def test_generic_model_policy_fails_before_any_ltspice_call(self) -> None:
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            net = root / "circuit.net"
+            spec = root / "circuit.json"
+            output = root / "output"
+            net.write_text("XU1 in 0 vdd vss out UniversalOpAmp2\n.op\n.end\n", encoding="utf-8")
+            spec.write_text(json.dumps({
+                "analyses": [{"name": "op", "kind": "op"}],
+                "model_policy": "real_device_required",
+            }), encoding="utf-8")
+            stdout = io.StringIO()
+            with patch.object(suite, "run_simulation") as runner:
+                argv = ["run_validation_suite.py", "--net", str(net), "--spec", str(spec),
+                        "--ltspice", str(root / "LTspice.exe"), "--output", str(output)]
+                with patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout):
+                    self.assertEqual(suite.main(), 1)
+                runner.assert_not_called()
+            compact = json.loads(stdout.getvalue())
+            self.assertEqual(compact["ltspice_runs"], 0)
+            self.assertEqual(compact["status"], "FAIL")
+            summary = json.loads((output / "validation_summary.json").read_text(encoding="utf-8"))
+            self.assertTrue(any("real device model required" in item for item in summary["failures"]))
 
     def test_simulation_failure_fails_fast_but_metric_evaluation_continues(self) -> None:
         with TemporaryDirectory() as folder:

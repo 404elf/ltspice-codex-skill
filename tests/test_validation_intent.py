@@ -72,6 +72,54 @@ class ValidationIntentTests(unittest.TestCase):
         with self.assertRaises(intent.IntentError):
             intent.normalize_intent({"analyses": {"op": ".op"}, "analysis": {"op": ".op"}})
 
+    def test_nested_requirements_and_tolerances_route_by_analysis(self):
+        normalized = intent.normalize_intent({
+            "analyses": {
+                "ac": {
+                    "directive": ".ac dec 10 10 1000",
+                    "requirements": {
+                        "gain": {
+                            "measure": "gain_at",
+                            "signal": "V(out)",
+                            "reference": "V(in)",
+                            "at": 1000,
+                            "target": 1,
+                        }
+                    },
+                    "tolerances": {"parameters": {"R": 5}},
+                },
+                "tran": {
+                    "directive": ".tran 0 1m",
+                    "requirements": [{
+                        "name": "peak",
+                        "measure": "abs_max",
+                        "signal": "V(out)",
+                        "max": 2,
+                    }],
+                    "tolerances": {"parameters": {"C": 10}},
+                },
+            }
+        })
+        spec = normalized["spec"]
+        self.assertEqual(spec["metrics"]["gain"]["analysis"], "ac")
+        self.assertEqual(spec["metrics"]["peak"]["analysis"], "tran")
+        self.assertEqual(
+            {group["analysis"] for group in spec["tolerance_groups"]},
+            {"ac", "tran"},
+        )
+
+    def test_model_policy_is_canonicalized(self):
+        normalized = intent.normalize_intent({
+            "analyses": {"op": ".op"},
+            "model_policy": {"policy": "real_device_required"},
+        })
+        self.assertEqual(normalized["spec"]["model_policy"], "real_device_required")
+        with self.assertRaises(intent.IntentError):
+            intent.normalize_intent({
+                "analyses": {"op": ".op"},
+                "model_policy": "unknown",
+            })
+
     def test_relative_paths_resolve_from_config_and_net(self):
         temp, root, net, config = self._environment()
         with temp:
