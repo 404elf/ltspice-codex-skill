@@ -48,6 +48,30 @@ class ValidationIntentTests(unittest.TestCase):
         self.assertEqual(normalized["spec"]["metrics"]["cutoff"]["tolerance_percent"], 10.0)
         self.assertTrue(normalized["spec"]["preflight"])
 
+    def test_mechanically_recoverable_input_normalizes(self):
+        parsed = intent.parse_intent_text(
+            "// comment\n"
+            "{'mode':'STANDARD','analysis':{'op':'.op'},"
+            "'metrics':{'bias':{'kind':'value','trace':'V(in)','analysis':'op',}},}"
+        )
+        normalized = intent.normalize_intent(parsed)
+        self.assertEqual(normalized["spec"]["analyses"][0]["kind"], "op")
+        self.assertEqual(normalized["spec"]["metrics"]["bias"]["kind"], "final")
+
+    def test_op_axis_metric_is_rejected_before_suite(self):
+        with self.assertRaises(intent.IntentError):
+            intent.normalize_intent({
+                "analyses": {"op": ".op"},
+                "requirements": [{
+                    "name": "bad_axis", "measure": "value_at", "trace": "V(in)",
+                    "analysis": "op", "at": 1,
+                }],
+            })
+
+    def test_ambiguous_alias_is_rejected(self):
+        with self.assertRaises(intent.IntentError):
+            intent.normalize_intent({"analyses": {"op": ".op"}, "analysis": {"op": ".op"}})
+
     def test_relative_paths_resolve_from_config_and_net(self):
         temp, root, net, config = self._environment()
         with temp:
@@ -68,7 +92,7 @@ class ValidationIntentTests(unittest.TestCase):
         run.assert_not_called()
         result = json.loads(output.getvalue())
         self.assertEqual(result["stage"], "intent")
-        self.assertEqual(result["ltspice_runs"], 0)
+        self.assertEqual(result["ltspice_calls"], 0)
 
     def test_missing_net_fails_before_subprocess(self):
         temp, root, _net, config = self._environment()
@@ -125,7 +149,10 @@ class ValidationIntentTests(unittest.TestCase):
         self.assertNotIn("--ltspice-executable", command)
         self.assertEqual(command.count("--net"), 1)
         self.assertEqual(command.count("--spec"), 1)
-        self.assertEqual(json.loads(output.getvalue())["entrypoint"], "run_validation_intent")
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["ltspice_calls"], 1)
+        self.assertIn("validation_summary.json", result["summary_path"])
 
 
 if __name__ == "__main__":
