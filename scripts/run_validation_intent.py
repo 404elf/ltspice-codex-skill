@@ -218,9 +218,16 @@ def _analysis(label: str, raw: object) -> dict[str, object]:
         raise IntentError(f"analyses.{label}: unsupported kind {kind}")
     if inferred and inferred != kind:
         raise IntentError(f"analyses.{label}.directive must be a .{kind} directive")
+    nested_requirements = data.pop("requirements", None)
+    nested_tolerances = data.pop("tolerances", None)
     if data:
         raise IntentError(f"analyses.{label}: unsupported fields: {', '.join(sorted(data))}")
-    return {"name": name, "kind": kind, **({"directive": directive} if direct is not None else {})}
+    result: dict[str, object] = {"name": name, "kind": kind, **({"directive": directive} if direct is not None else {})}
+    if nested_requirements is not None:
+        result["requirements"] = nested_requirements
+    if nested_tolerances is not None:
+        result["tolerances"] = nested_tolerances
+    return result
 
 
 def _analyses(raw: object) -> list[dict[str, object]]:
@@ -257,19 +264,67 @@ def _analyses(raw: object) -> list[dict[str, object]]:
     return result
 
 
-def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, dict[str, object]]:
-    if raw is None:
-        return {}
-    if isinstance(raw, dict) and any(key in raw for key in ("measure", "kind", "signal", "trace")):
-        raw = [raw]
+REQUIREMENT_FIELDS = {
+    "name", "id", "measure", "kind", "signal", "trace", "analysis", "reference", "ref",
+    "at", "x", "target", "min", "max", "response", "tolerance", "tolerance_percent",
+}
+
+
+def _analysis_name(label: object, analyses: list[dict[str, object]]) -> str | None:
+    text = str(label).casefold()
+    matches = [str(item["name"]) for item in analyses if text in {
+        str(item["name"]).casefold(), str(item["kind"]).casefold(),
+    }]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _nested_requirement_items(label: object, raw: object, analyses: list[dict[str, object]]) -> list[dict[str, object]]:
+    analysis = _analysis_name(label, analyses)
+    if analysis is None:
+        raise IntentError(f"requirements.{label}: unknown or ambiguous analysis")
+    if isinstance(raw, dict) and any(key in raw for key in REQUIREMENT_FIELDS):
+        entries = [(None, raw)]
+    elif isinstance(raw, list):
+        entries = [(None, item) for item in raw]
     elif isinstance(raw, dict):
-        raw = [dict(value, name=name) if isinstance(value, dict) else value for name, value in raw.items()]
-    if not isinstance(raw, list):
+        entries = list(raw.items())
+    else:
+        raise IntentError(f"requirements.{label} must be an object or list")
+    result: list[dict[str, object]] = []
+    for name, item in entries:
+        if not isinstance(item, dict):
+            raise IntentError(f"requirements.{label} entries must be objects")
+        data = dict(item)
+        if name is not None and not any(key in data for key in ("name", "id")):
+            data["name"] = name
+        data.setdefault("analysis", analysis)
+        result.append(data)
+    return result
+
+
+def _requirement_items(raw: object, analyses: list[dict[str, object]]) -> list[object]:
+    if raw is None:
+        return []
+    if isinstance(raw, dict) and any(key in raw for key in REQUIREMENT_FIELDS):
+        return [raw]
+    if isinstance(raw, list):
+        return list(raw)
+    if not isinstance(raw, dict):
         raise IntentError("requirements must be a list or named object")
+    if raw and all(_analysis_name(key, analyses) for key in raw):
+        result: list[object] = []
+        for label, value in raw.items():
+            result.extend(_nested_requirement_items(label, value, analyses))
+        return result
+    return [dict(value, name=name) if isinstance(value, dict) else value for name, value in raw.items()]
+
+
+def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    raw_items = _requirement_items(raw, analyses)
     known = {str(value).casefold() for item in analyses for value in (item["name"], item["kind"])}
     analysis_kind = {str(item["name"]).casefold(): str(item["kind"]).lower() for item in analyses}
     result: dict[str, dict[str, object]] = {}
-    for index, raw_item in enumerate(raw):
+    for index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict):
             raise IntentError(f"requirements[{index}] must be an object")
         data = dict(raw_item)
@@ -324,11 +379,9 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
     return result
 
 
-def _tolerances(raw: object) -> dict[str, object]:
-    if raw is None:
-        return {}
+def _tolerance_payload(raw: object, label: str) -> dict[str, object]:
     if not isinstance(raw, dict):
-        raise IntentError("tolerances must be an object with parameters")
+        raise IntentError(f"{label} must be an object with parameters")
     data = dict(raw)
     strategy = _text(data.pop("strategy", data.pop("corner_strategy", "auto")), "tolerances.strategy").lower()
     if strategy not in {"auto", "cartesian", "monotonic"}:
@@ -361,10 +414,74 @@ def _tolerances(raw: object) -> dict[str, object]:
             monotonic[str(name)] = {"parameters": directions, **({"analysis": item["analysis"]} if "analysis" in item else {})}
         result["monotonic"] = monotonic
     elif objectives is not None:
-        raise IntentError("tolerances.objectives is only valid with strategy=monotonic")
+        raise IntentError(f"{label}.objectives is only valid with strategy=monotonic")
     if data:
-        raise IntentError(f"tolerances: unsupported fields: {', '.join(sorted(data))}")
+        raise IntentError(f"{label}: unsupported fields: {', '.join(sorted(data))}")
     return result
+
+
+def _tolerance_analysis(label: object, analyses: list[dict[str, object]]) -> str:
+    name = _analysis_name(label, analyses)
+    if name is None:
+        raise IntentError(f"tolerances.{label}: unknown or ambiguous analysis")
+    return name
+
+
+def _tolerances(raw: object, analyses: list[dict[str, object]]) -> dict[str, object]:
+    if raw is None:
+        return {}
+    if isinstance(raw, list):
+        groups = raw
+    elif isinstance(raw, dict):
+        reserved = {"parameters", "strategy", "corner_strategy", "objectives", "analysis"}
+        if any(key in raw for key in reserved):
+            if "analysis" in raw:
+                group = dict(raw)
+                analysis = _tolerance_analysis(group.pop("analysis"), analyses)
+                payload = _tolerance_payload(group, "tolerances")
+                payload["analysis"] = analysis
+                return {"tolerance_groups": [payload]}
+            return _tolerance_payload(raw, "tolerances")
+        groups = raw.get("by_analysis", raw.get("per_analysis", raw.get("analyses")))
+        if groups is None:
+            groups = raw
+        if not isinstance(groups, dict):
+            raise IntentError("tolerances.by_analysis must be an object")
+        normalized: list[dict[str, object]] = []
+        for label, value in groups.items():
+            payload = _tolerance_payload(value, f"tolerances.{label}")
+            payload["analysis"] = _tolerance_analysis(label, analyses)
+            normalized.append(payload)
+        return {"tolerance_groups": normalized}
+    else:
+        raise IntentError("tolerances must be an object or list")
+
+    normalized = []
+    for index, item in enumerate(groups):
+        if not isinstance(item, dict) or "analysis" not in item:
+            raise IntentError(f"tolerances[{index}] requires analysis and parameters")
+        data = dict(item)
+        analysis = _tolerance_analysis(data.pop("analysis"), analyses)
+        payload = _tolerance_payload(data, f"tolerances[{index}]")
+        payload["analysis"] = analysis
+        normalized.append(payload)
+    return {"tolerance_groups": normalized}
+
+
+def _model_policy(raw: object) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        data = dict(raw)
+        value = data.pop("policy", data.pop("name", None))
+        if data:
+            raise IntentError(f"model_policy: unsupported fields: {', '.join(sorted(data))}")
+    else:
+        value = raw
+    policy = _text(value, "model_policy").lower()
+    if policy != "real_device_required":
+        raise IntentError(f"unsupported model_policy: {policy}")
+    return policy
 
 
 def normalize_intent(intent: object) -> dict[str, object]:
@@ -387,7 +504,7 @@ def normalize_intent(intent: object) -> dict[str, object]:
             if canonical in intent:
                 raise IntentError(f"use only one of: {alias}, {canonical}")
             intent[canonical] = intent.pop(alias)
-    allowed = {"mode", "analyses", "requirements", "tolerances", "required_nets"}
+    allowed = {"mode", "analyses", "requirements", "tolerances", "required_nets", "model_policy"}
     unknown = sorted(set(intent) - allowed)
     if unknown:
         raise IntentError(f"unsupported intent fields: {', '.join(unknown)}")
@@ -395,11 +512,33 @@ def normalize_intent(intent: object) -> dict[str, object]:
     if mode not in MODES:
         raise IntentError(f"unsupported mode: {mode}")
     analyses = _analyses(intent.get("analyses"))
+    nested_requirements = [
+        (str(item["name"]), item.pop("requirements"))
+        for item in analyses
+        if "requirements" in item
+    ]
+    nested_tolerances = [
+        (str(item["name"]), item.pop("tolerances"))
+        for item in analyses
+        if "tolerances" in item
+    ]
+    if nested_requirements and "requirements" in intent:
+        raise IntentError("use either top-level requirements or nested analysis requirements")
+    if nested_tolerances and "tolerances" in intent:
+        raise IntentError("use either top-level tolerances or nested analysis tolerances")
+    requirements_raw = (
+        {name: value for name, value in nested_requirements}
+        if nested_requirements else intent.get("requirements")
+    )
+    tolerances_raw = (
+        {name: value for name, value in nested_tolerances}
+        if nested_tolerances else intent.get("tolerances")
+    )
     spec: dict[str, object] = {
         "preflight": True,
         "simulation_fail_fast": True,
         "analyses": analyses,
-        "metrics": _requirements(intent.get("requirements"), analyses),
+        "metrics": _requirements(requirements_raw, analyses),
     }
     required = intent.get("required_nets")
     if required is not None:
@@ -408,7 +547,10 @@ def normalize_intent(intent: object) -> dict[str, object]:
         if not isinstance(required, list) or not all(isinstance(item, str) and item.strip() for item in required):
             raise IntentError("required_nets must be a string or list of non-empty strings")
         spec["required_nets"] = [item.strip() for item in required]
-    spec.update(_tolerances(intent.get("tolerances")))
+    spec.update(_tolerances(tolerances_raw, analyses))
+    model_policy = _model_policy(intent.get("model_policy"))
+    if model_policy:
+        spec["model_policy"] = model_policy
     return {"mode": mode, "spec": spec}
 
 
@@ -451,6 +593,8 @@ def _failure_class(summary: dict[str, object]) -> str:
     failures = [str(item).lower() for item in summary.get("failures", []) or []]
     dry_run = summary.get("dry_run")
     if isinstance(dry_run, dict) and not dry_run.get("ok", True):
+        if any("real device model required" in failure for failure in failures):
+            return "ENGINEERING FAILURE"
         return "PLUMBING/INFRASTRUCTURE FAILURE"
     infrastructure_terms = (
         "no such", "unknown", "error", "fatal", "parser", "singular", "aborted",
@@ -471,6 +615,8 @@ def _compact(summary: dict[str, object], fallback_summary: Path, mode: str) -> d
     if isinstance(metrics, dict):
         failed.extend(str(name) for name, value in metrics.items() if isinstance(value, dict) and not value.get("ok"))
     failed.extend(str(item) for item in summary.get("failed_corners", []) or [])
+    if not failed:
+        failed.extend(str(item) for item in summary.get("failures", []) or [])
     return {
         "status": "PASS" if bool(summary.get("ok")) else "FAIL",
         "ok": bool(summary.get("ok")),

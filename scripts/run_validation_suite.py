@@ -135,6 +135,34 @@ SCALAR_METRICS = {
     "peak", "peak_to_peak", "p2p", "mean", "rms", "final", "last",
 }
 CONVERGENCE_HINT_PREFIXES = (".options", ".nodeset", ".ic")
+GENERIC_MODEL_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:UniversalOpAmp2?|opamp|ideal(?:opamp)?|"
+    r"generic(?:_?opamp)?|behavioral(?:_?opamp)?)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+
+
+def generic_model_hits(source_text: str) -> list[str]:
+    hits: set[str] = set()
+    for line in source_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("*"):
+            continue
+        if stripped.lower().startswith(".model") or stripped[:1].upper() == "X":
+            hits.update(match.group(0) for match in GENERIC_MODEL_RE.finditer(stripped))
+    return sorted(hits, key=str.casefold)
+
+
+def validate_model_policy(source_text: str, policy: object) -> list[str]:
+    if policy is None:
+        return []
+    normalized = str(policy).strip().lower()
+    if normalized != "real_device_required":
+        return [f"REQUIREMENT FAILURE: unsupported model_policy {policy}"]
+    return [
+        f"REQUIREMENT FAILURE: real device model required; generic model {name} detected"
+        for name in generic_model_hits(source_text)
+    ]
 
 
 def directive_kind(line: str) -> str | None:
@@ -204,6 +232,8 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
     warnings: list[str] = []
     if not isinstance(spec, dict):
         return {"ok": False, "errors": ["validation specification must be a JSON object"], "warnings": []}
+
+    errors.extend(validate_model_policy(source_text, spec.get("model_policy")))
 
     required_nets = spec.get("required_nets", [])
     if not isinstance(required_nets, list) or not all(isinstance(item, str) and item.strip() for item in required_nets):
@@ -342,6 +372,44 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
             } for item in analyses):
                 errors.append(f"monotonic declaration {objective} references unknown analysis: {selected}")
 
+    tolerance_groups = spec.get("tolerance_groups")
+    if tolerance_groups is not None and not isinstance(tolerance_groups, list):
+        errors.append("tolerance_groups must be a list")
+    elif isinstance(tolerance_groups, list):
+        for index, group in enumerate(tolerance_groups):
+            if not isinstance(group, dict):
+                errors.append(f"tolerance_groups[{index}] must be an object")
+                continue
+            selected = group.get("analysis")
+            if selected is None or not any(str(selected).lower() in {
+                str(item.get("name", "")).lower(), str(item.get("kind", "")).lower()
+            } for item in analyses):
+                errors.append(f"tolerance_groups[{index}] references unknown analysis: {selected}")
+            group_corners = group.get("corners")
+            if group_corners is None or not isinstance(group_corners, (list, dict)):
+                errors.append(f"tolerance_groups[{index}].corners must be a list or object")
+            elif isinstance(group_corners, dict):
+                for key in group_corners:
+                    if str(key).lower() not in params:
+                        errors.append(f"tolerance group parameter does not exist: {key}")
+            elif isinstance(group_corners, list):
+                for corner_index, corner in enumerate(group_corners):
+                    if not isinstance(corner, dict):
+                        errors.append(f"tolerance_groups[{index}].corners[{corner_index}] must be an object")
+                        continue
+                    corner_params = corner.get("params", {})
+                    if not isinstance(corner_params, dict):
+                        errors.append(f"tolerance_groups[{index}].corners[{corner_index}].params must be an object")
+                    else:
+                        for key in corner_params:
+                            if str(key).lower() not in params:
+                                errors.append(f"tolerance group parameter does not exist: {key}")
+            group_strategy = str(group.get("corner_strategy", "auto")).lower()
+            if group_strategy not in {"auto", "cartesian", "monotonic"}:
+                errors.append(f"tolerance_groups[{index}] has unsupported corner_strategy: {group_strategy}")
+            if group_strategy == "monotonic" and not group.get("monotonic"):
+                errors.append(f"tolerance_groups[{index}] monotonic strategy requires declarations")
+
     if raw_corners is not None and not errors:
         try:
             planned_corners = expand_corners(
@@ -358,6 +426,18 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
                 replace_parameters(source_text, params_for_corner)
         except (TypeError, ValueError) as exc:
             errors.append(f"corner plan: {exc}")
+
+    if tolerance_groups is not None and not errors:
+        try:
+            planned_groups = expand_tolerance_groups(source_text, tolerance_groups)
+            for index, corner in enumerate(planned_groups):
+                params_for_corner = corner.get("params", {})
+                if not isinstance(params_for_corner, dict):
+                    errors.append(f"tolerance corner {index}.params must be an object")
+                    continue
+                replace_parameters(source_text, params_for_corner)
+        except (TypeError, ValueError) as exc:
+            errors.append(f"tolerance corner plan: {exc}")
 
     hints = spec.get("convergence_hints", [])
     if hints is not None and not isinstance(hints, list):
@@ -568,6 +648,32 @@ def expand_corners(
     if normalized_strategy == "monotonic":
         raise ValueError("corner_strategy=monotonic requires monotonic declarations")
     return _cartesian_corners(source_text, raw_corners)
+
+
+def expand_tolerance_groups(source_text: str, groups: object) -> list[dict[str, object]]:
+    if groups is None:
+        return []
+    if not isinstance(groups, list):
+        raise ValueError("tolerance_groups must be a list")
+    result: list[dict[str, object]] = []
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict):
+            raise ValueError(f"tolerance_groups[{index}] must be an object")
+        analysis = group.get("analysis")
+        if analysis is None or not str(analysis).strip():
+            raise ValueError(f"tolerance_groups[{index}] requires analysis")
+        corners = expand_corners(
+            source_text,
+            group.get("corners"),
+            monotonic=group.get("monotonic"),
+            strategy=str(group.get("corner_strategy", "auto")),
+        )
+        for corner in corners:
+            corner = dict(corner)
+            corner["analysis"] = str(analysis)
+            corner["name"] = f"{analysis}-{corner['name']}"[:96]
+            result.append(corner)
+    return result
 
 
 def trace_name(names: list[str], requested: str) -> str:
@@ -905,6 +1011,7 @@ def main() -> int:
         summary["spec_sha256"] = sha256(spec_path)
         if isinstance(spec, dict):
             summary["simulation_fail_fast"] = bool(spec.get("simulation_fail_fast", True))
+            summary["model_policy"] = spec.get("model_policy")
 
         dry_run = dry_run_spec(source_text, net, spec)
         dry_run_path.write_text(json.dumps(dry_run, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1210,14 +1317,18 @@ def main() -> int:
                 summary["analyses"].append(job)
                 stop_after_simulation_failure = collect_job(job)
 
-            corners = expand_corners(
-                source_text,
-                spec.get("corners") or spec.get("sweep"),
-                monotonic=spec.get("monotonic"),
-                strategy=str(spec.get("corner_strategy", "auto")),
-            )
+            raw_corners = spec.get("corners") if "corners" in spec else spec.get("sweep")
+            corners: list[dict[str, object]] = []
+            if raw_corners is not None:
+                corners.extend(expand_corners(
+                    source_text,
+                    raw_corners,
+                    monotonic=spec.get("monotonic"),
+                    strategy=str(spec.get("corner_strategy", "auto")),
+                ))
+            corners.extend(expand_tolerance_groups(source_text, spec.get("tolerance_groups")))
             summary["corner_plan"] = {
-                "requested": spec.get("corners") or spec.get("sweep"),
+                "requested": raw_corners if raw_corners is not None else spec.get("tolerance_groups"),
                 "strategy": str(spec.get("corner_strategy", "auto")),
                 "count": len(corners),
             }
