@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Run the validation suite from a small, engineering-facing intent."""
+"""Run the existing validation suite from a small engineering intent.
+
+This adapter owns only representation normalization, schema checks, and path
+resolution.  Simulation, RAW/LOG validation, metrics, corners, and evidence
+remain in run_validation_suite.py.
+"""
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -16,10 +22,14 @@ CONFIG_NAME = ".ltspice-codex-config.json"
 MODES = {"AUTO", "QUICK", "STANDARD", "STRICT", "BATCH"}
 KINDS = {"tran", "ac", "dc", "op", "noise", "tf", "pz"}
 MEASURE_ALIASES = {
-    "p2p": "peak_to_peak", "cutoff": "fc_3db", "cutoff_3db": "fc_3db",
-    "gain": "gain_at", "absolute_peak": "abs_max", "last": "final",
+    "p2p": "peak_to_peak",
+    "cutoff": "fc_3db",
+    "cutoff_3db": "fc_3db",
+    "gain": "gain_at",
+    "absolute_peak": "abs_max",
+    "last": "final",
 }
-AXIS_METRICS = {"value_at", "value_at_x", "gain_at", "gain_at_frequency"}
+AXIS_METRICS = {"value_at", "value_at_x", "gain_at", "gain_at_frequency", "fc_3db", "cutoff_3db"}
 REFERENCE_METRICS = {"gain_at", "gain_at_frequency"}
 
 
@@ -37,6 +47,8 @@ def _text(value: object, label: str) -> str:
 
 
 def _number(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise IntentError(f"{label} must be numeric")
     try:
         result = float(_text(value, label).removesuffix("%").strip())
     except ValueError as exc:
@@ -58,20 +70,109 @@ def _resolve(value: object, base: Path) -> Path:
     return (candidate if candidate.is_absolute() else base / candidate).resolve()
 
 
+def _strip_json_comments(text: str) -> str:
+    """Remove // and /* */ comments without changing quoted strings."""
+
+    out: list[str] = []
+    index = 0
+    quote: str | None = None
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if quote:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            out.append(char)
+            index += 1
+        elif text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = len(text) if end < 0 else end + 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def _strip_trailing_commas(text: str) -> str:
+    out: list[str] = []
+    index = 0
+    quote: str | None = None
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if quote:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(text) and text[lookahead] in "}]":
+                index += 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def parse_intent_text(text: str) -> object:
+    """Accept JSON plus safe, mechanically recoverable JSON-like forms."""
+
+    try:
+        return json.loads(text.lstrip("\ufeff"))
+    except json.JSONDecodeError as first_error:
+        cleaned = _strip_trailing_commas(_strip_json_comments(text.lstrip("\ufeff")))
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            try:
+                value = ast.literal_eval(cleaned)
+            except (SyntaxError, ValueError, TypeError) as exc:
+                raise IntentError(f"intent syntax is not valid JSON or a safe JSON-like form: {first_error.msg}") from exc
+            if not isinstance(value, (dict, list)):
+                raise IntentError("intent must be an object")
+            return value
+
+
 def load_config(config_path: Path | None = None) -> dict[str, Path]:
     path = (config_path or ROOT / CONFIG_NAME).resolve()
     if not path.is_file():
-        raise IntentError(f"CONFIG_MISSING: {path}; run bootstrap.py")
+        raise IntentError(f"CONFIG_MISSING: {path}; run bootstrap.py or create the local configuration")
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise IntentError(f"CONFIG_INVALID: {path}") from exc
     if not isinstance(raw, dict):
         raise IntentError("CONFIG_INVALID: configuration must be an object")
-    result: dict[str, Path] = {key: _resolve(raw[key], path.parent) for key in ("python", "ltspice", "output_root") if key in raw}
-    missing = [key for key in ("python", "ltspice", "output_root") if key not in result]
-    if missing:
-        raise IntentError(f"CONFIG_INVALID: missing {', '.join(missing)}")
+    result: dict[str, Path] = {}
+    for key in ("python", "ltspice", "output_root"):
+        if key not in raw:
+            raise IntentError(f"CONFIG_INVALID: missing {key}")
+        result[key] = _resolve(raw[key], path.parent)
     if not result["python"].is_file():
         raise IntentError(f"CONFIG_INVALID: python not found: {result['python']}")
     if not result["ltspice"].is_file():
@@ -88,16 +189,15 @@ def resolve_paths(net_value: object, config_path: Path | None = None, *, cwd: Pa
     root = config["output_root"]
     try:
         net.parent.relative_to(root)
-        same_tree = net.parent != root
+        output = net.parent if net.parent != root else root / net.stem
     except ValueError:
-        same_tree = False
-    output = net.parent if same_tree else root / net.stem
+        output = root / net.stem
     return {"net": net, "output": output.resolve(), **config}
 
 
 def _analysis(label: str, raw: object) -> dict[str, object]:
     if isinstance(raw, str):
-        data = {"directive": raw}
+        data: dict[str, object] = {"directive": raw}
     elif raw is None:
         data = {}
     elif isinstance(raw, dict):
@@ -105,35 +205,51 @@ def _analysis(label: str, raw: object) -> dict[str, object]:
     else:
         raise IntentError(f"analyses.{label} must be an object, directive string, or null")
     name = _text(data.pop("name", label), f"analyses.{label}.name")
-    kind = _text(data.pop("kind", label), f"analyses.{label}.kind").lower()
-    if kind not in KINDS:
-        raise IntentError(f"analyses.{label}: unsupported kind {kind}")
     direct = data.pop("directive", None)
+    inferred = None
     if direct is not None:
         directive = _text(direct, f"analyses.{label}.directive")
         match = re.match(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", directive, re.I)
-        if not match or match.group(1).lower() != kind:
-            raise IntentError(f"analyses.{label}.directive must be a .{kind} directive")
-    else:
-        directive = None
+        if not match:
+            raise IntentError(f"analyses.{label}.directive is not a supported analysis directive")
+        inferred = match.group(1).lower()
+    kind = _text(data.pop("kind", inferred or label), f"analyses.{label}.kind").lower()
+    if kind not in KINDS:
+        raise IntentError(f"analyses.{label}: unsupported kind {kind}")
+    if inferred and inferred != kind:
+        raise IntentError(f"analyses.{label}.directive must be a .{kind} directive")
     if data:
         raise IntentError(f"analyses.{label}: unsupported fields: {', '.join(sorted(data))}")
-    return {"name": name, "kind": kind, **({"directive": directive} if directive else {})}
+    return {"name": name, "kind": kind, **({"directive": directive} if direct is not None else {})}
 
 
 def _analyses(raw: object) -> list[dict[str, object]]:
     if raw is None:
         return []
+    if isinstance(raw, str):
+        match = re.match(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", raw, re.I)
+        if not match:
+            raise IntentError("analyses directive must start with .tran, .ac, .dc, .op, .noise, .tf, or .pz")
+        kind = match.group(1).lower()
+        return [_analysis(kind, {"kind": kind, "directive": raw})]
     if isinstance(raw, dict):
-        entries = list(raw.items())
+        if any(key in raw for key in ("name", "kind", "directive")):
+            entries = [(str(raw.get("name") or raw.get("kind") or "analysis"), raw)]
+        else:
+            entries = list(raw.items())
     elif isinstance(raw, list):
         entries = []
         for index, value in enumerate(raw):
-            if not isinstance(value, dict) or not (value.get("name") or value.get("kind")):
-                raise IntentError(f"analyses[{index}] requires name or kind")
-            entries.append((str(value.get("name") or value.get("kind")), value))
+            if isinstance(value, str):
+                match = re.match(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", value, re.I)
+                label = match.group(1).lower() if match else value
+                entries.append((label, value))
+            elif isinstance(value, dict) and (value.get("name") or value.get("kind")):
+                entries.append((str(value.get("name") or value.get("kind")), value))
+            else:
+                raise IntentError(f"analyses[{index}] requires a kind/name or directive")
     else:
-        raise IntentError("analyses must be an object or list")
+        raise IntentError("analyses must be an object, list, or directive string")
     result = [_analysis(str(label), value) for label, value in entries]
     names = [str(item["name"]).casefold() for item in result]
     if len(names) != len(set(names)):
@@ -144,9 +260,14 @@ def _analyses(raw: object) -> list[dict[str, object]]:
 def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, dict[str, object]]:
     if raw is None:
         return {}
+    if isinstance(raw, dict) and any(key in raw for key in ("measure", "kind", "signal", "trace")):
+        raw = [raw]
+    elif isinstance(raw, dict):
+        raw = [dict(value, name=name) if isinstance(value, dict) else value for name, value in raw.items()]
     if not isinstance(raw, list):
-        raise IntentError("requirements must be a list")
+        raise IntentError("requirements must be a list or named object")
     known = {str(value).casefold() for item in analyses for value in (item["name"], item["kind"])}
+    analysis_kind = {str(item["name"]).casefold(): str(item["kind"]).lower() for item in analyses}
     result: dict[str, dict[str, object]] = {}
     for index, raw_item in enumerate(raw):
         if not isinstance(raw_item, dict):
@@ -161,8 +282,8 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
         if measure is None or signal is None:
             raise IntentError(f"requirements.{name}: measure and signal are required")
         measure_text = _text(measure, f"requirements.{name}.measure").lower()
-        metric: dict[str, object] = {"kind": MEASURE_ALIASES.get(measure_text, measure_text),
-                                     "trace": _text(signal, f"requirements.{name}.signal")}
+        metric_kind = MEASURE_ALIASES.get(measure_text, measure_text)
+        metric: dict[str, object] = {"kind": metric_kind, "trace": _text(signal, f"requirements.{name}.signal")}
         selected = data.pop("analysis", None)
         if selected is None:
             if len(analyses) != 1:
@@ -188,11 +309,17 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
             metric["tolerance_percent"] = 0.0
         if data:
             raise IntentError(f"requirements.{name}: unsupported fields: {', '.join(sorted(data))}")
-        kind = str(metric["kind"])
-        if kind in AXIS_METRICS and "x" not in metric:
-            raise IntentError(f"requirements.{name}: at is required for {kind}")
-        if kind in REFERENCE_METRICS and "reference" not in metric:
-            raise IntentError(f"requirements.{name}: reference is required for {kind}")
+        if metric_kind in AXIS_METRICS and "x" not in metric and metric_kind not in {"fc_3db", "cutoff_3db"}:
+            raise IntentError(f"requirements.{name}: at is required for {metric_kind}")
+        if metric_kind in REFERENCE_METRICS and "reference" not in metric:
+            raise IntentError(f"requirements.{name}: reference is required for {metric_kind}")
+        selected_kind = analysis_kind.get(selected_text.casefold(), selected_text.casefold())
+        if selected_kind == "op" and metric_kind in AXIS_METRICS:
+            raise IntentError(f"requirements.{name}: {metric_kind} needs an analysis axis and is invalid for .op")
+        if selected_kind == "op" and metric_kind in {"value", "scalar"}:
+            metric["kind"] = "final"
+        elif selected_kind == "op" and metric_kind in {"abs", "absolute"}:
+            metric["kind"] = "abs_max"
         result[name] = metric
     return result
 
@@ -202,10 +329,13 @@ def _tolerances(raw: object) -> dict[str, object]:
         return {}
     if not isinstance(raw, dict):
         raise IntentError("tolerances must be an object with parameters")
-    strategy = _text(raw.get("strategy", "auto"), "tolerances.strategy").lower()
+    data = dict(raw)
+    strategy = _text(data.pop("strategy", data.pop("corner_strategy", "auto")), "tolerances.strategy").lower()
     if strategy not in {"auto", "cartesian", "monotonic"}:
         raise IntentError(f"unsupported tolerance strategy: {strategy}")
-    values = raw.get("parameters")
+    values = data.pop("parameters", None)
+    if values is None:
+        raise IntentError("tolerances.parameters must be a non-empty object")
     if not isinstance(values, dict) or not values:
         raise IntentError("tolerances.parameters must be a non-empty object")
     corners: dict[str, list[float]] = {}
@@ -217,8 +347,8 @@ def _tolerances(raw: object) -> dict[str, object]:
     result: dict[str, object] = {"corners": corners}
     if strategy != "auto":
         result["corner_strategy"] = strategy
+    objectives = data.pop("objectives", None)
     if strategy == "monotonic":
-        objectives = raw.get("objectives")
         if not isinstance(objectives, dict) or not objectives:
             raise IntentError("monotonic tolerances require objectives")
         monotonic: dict[str, object] = {}
@@ -230,14 +360,33 @@ def _tolerances(raw: object) -> dict[str, object]:
                 raise IntentError(f"tolerances.objectives.{name} requires directions")
             monotonic[str(name)] = {"parameters": directions, **({"analysis": item["analysis"]} if "analysis" in item else {})}
         result["monotonic"] = monotonic
-    elif "objectives" in raw:
+    elif objectives is not None:
         raise IntentError("tolerances.objectives is only valid with strategy=monotonic")
+    if data:
+        raise IntentError(f"tolerances: unsupported fields: {', '.join(sorted(data))}")
     return result
 
 
 def normalize_intent(intent: object) -> dict[str, object]:
     if not isinstance(intent, dict):
-        raise IntentError("intent must be a JSON object")
+        raise IntentError("intent must be an object")
+    intent = dict(intent)
+    wrapper_keys = [key for key in ("intent", "validation_intent") if key in intent]
+    if len(wrapper_keys) > 1:
+        raise IntentError("use only one of: intent, validation_intent")
+    wrapper = intent.pop(wrapper_keys[0]) if wrapper_keys else None
+    if wrapper is not None:
+        if intent:
+            raise IntentError("intent wrapper cannot be combined with sibling fields")
+        if not isinstance(wrapper, dict):
+            raise IntentError("intent wrapper must contain an object")
+        intent = dict(wrapper)
+    aliases = {"analysis": "analyses", "metrics": "requirements", "tolerance": "tolerances", "required_net": "required_nets"}
+    for alias, canonical in aliases.items():
+        if alias in intent:
+            if canonical in intent:
+                raise IntentError(f"use only one of: {alias}, {canonical}")
+            intent[canonical] = intent.pop(alias)
     allowed = {"mode", "analyses", "requirements", "tolerances", "required_nets"}
     unknown = sorted(set(intent) - allowed)
     if unknown:
@@ -246,25 +395,49 @@ def normalize_intent(intent: object) -> dict[str, object]:
     if mode not in MODES:
         raise IntentError(f"unsupported mode: {mode}")
     analyses = _analyses(intent.get("analyses"))
-    spec: dict[str, object] = {"preflight": True, "simulation_fail_fast": True,
-                               "analyses": analyses, "metrics": _requirements(intent.get("requirements"), analyses)}
+    spec: dict[str, object] = {
+        "preflight": True,
+        "simulation_fail_fast": True,
+        "analyses": analyses,
+        "metrics": _requirements(intent.get("requirements"), analyses),
+    }
     required = intent.get("required_nets")
     if required is not None:
+        if isinstance(required, str):
+            required = [required]
         if not isinstance(required, list) or not all(isinstance(item, str) and item.strip() for item in required):
-            raise IntentError("required_nets must be a list of non-empty strings")
+            raise IntentError("required_nets must be a string or list of non-empty strings")
         spec["required_nets"] = [item.strip() for item in required]
     spec.update(_tolerances(intent.get("tolerances")))
     return {"mode": mode, "spec": spec}
 
 
-def _failure(stage: str, error: str) -> dict[str, object]:
-    return {"status": "FAIL", "ok": False, "stage": stage, "ltspice_runs": 0, "errors": [error]}
+def _failure(stage: str, error: str, *, summary_path: Path | None = None) -> dict[str, object]:
+    return {
+        "status": "FAIL",
+        "ok": False,
+        "failure_class": "PLUMBING/INFRASTRUCTURE FAILURE",
+        "failed_requirements": [],
+        "summary_path": str(summary_path) if summary_path else None,
+        "ltspice_calls": 0,
+        "evidence_reused": 0,
+        "stage": stage,
+        "error": error,
+    }
 
 
-def _last_json(stdout: str) -> dict[str, object] | None:
-    for line in reversed(stdout.splitlines()):
+def _suite_json(stdout: str) -> dict[str, object] | None:
+    text = stdout.strip()
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    starts = [match.start() for match in re.finditer(r"\{", stdout)]
+    for start in reversed(starts):
         try:
-            value = json.loads(line)
+            value, _ = decoder.raw_decode(stdout[start:])
         except json.JSONDecodeError:
             continue
         if isinstance(value, dict):
@@ -272,36 +445,89 @@ def _last_json(stdout: str) -> dict[str, object] | None:
     return None
 
 
+def _failure_class(summary: dict[str, object]) -> str:
+    if bool(summary.get("ok")):
+        return "NONE"
+    failures = [str(item).lower() for item in summary.get("failures", []) or []]
+    dry_run = summary.get("dry_run")
+    if isinstance(dry_run, dict) and not dry_run.get("ok", True):
+        return "PLUMBING/INFRASTRUCTURE FAILURE"
+    infrastructure_terms = (
+        "no such", "unknown", "error", "fatal", "parser", "singular", "aborted",
+        "missing", "fresh raw", "fresh log", "ltspice", "returncode", "timeout",
+    )
+    if any(any(term in failure for term in infrastructure_terms) for failure in failures):
+        return "PLUMBING/INFRASTRUCTURE FAILURE"
+    return "ENGINEERING FAILURE"
+
+
+def _compact(summary: dict[str, object], fallback_summary: Path, mode: str) -> dict[str, object]:
+    artifacts = summary.get("artifact_paths", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+    summary_path = Path(str(artifacts.get("validation_summary", fallback_summary)))
+    failed: list[str] = []
+    metrics = summary.get("metrics", {})
+    if isinstance(metrics, dict):
+        failed.extend(str(name) for name, value in metrics.items() if isinstance(value, dict) and not value.get("ok"))
+    failed.extend(str(item) for item in summary.get("failed_corners", []) or [])
+    return {
+        "status": "PASS" if bool(summary.get("ok")) else "FAIL",
+        "ok": bool(summary.get("ok")),
+        "failure_class": _failure_class(summary),
+        "failed_requirements": failed,
+        "summary_path": str(summary_path),
+        "ltspice_calls": int(summary.get("ltspice_runs", 0) or 0),
+        "evidence_reused": int(summary.get("evidence_reused", 0) or 0),
+        "mode": mode,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run LTspice validation from an engineering intent.")
+    parser = argparse.ArgumentParser(description="Run LTspice validation from a compact engineering intent.")
     parser.add_argument("--net", required=True, type=Path)
     parser.add_argument("--intent", required=True, type=Path)
     parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    paths: dict[str, Path] | None = None
+    output: Path | None = None
     try:
         paths = resolve_paths(args.net, args.config)
         intent_path = _resolve(args.intent, Path.cwd().resolve())
-        normalized = normalize_intent(json.loads(intent_path.read_text(encoding="utf-8")))
+        if not intent_path.is_file():
+            raise IntentError(f"INTENT_NOT_FOUND: {intent_path}")
+        normalized = normalize_intent(parse_intent_text(intent_path.read_text(encoding="utf-8-sig")))
         output = paths["output"]
         output.mkdir(parents=True, exist_ok=True)
         spec_path = output / "validation_spec.json"
         spec_path.write_text(json.dumps(normalized["spec"], indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    except (OSError, json.JSONDecodeError, IntentError) as exc:
+    except (OSError, IntentError) as exc:
         print(json.dumps(_failure("intent", str(exc)), ensure_ascii=False, separators=(",", ":")))
         return 2
-    command = [str(paths["python"]), str(paths["root"] / "scripts" / "run_validation_suite.py"),
-               "--net", str(paths["net"]), "--spec", str(spec_path), "--ltspice", str(paths["ltspice"]),
-               "--output", str(output), "--markdown", str(output / "validation_summary.md")]
+
+    summary_path = output / "validation_summary.json"
+    command = [
+        str(paths["python"]), str(paths["root"] / "scripts" / "run_validation_suite.py"),
+        "--net", str(paths["net"]), "--spec", str(spec_path), "--ltspice", str(paths["ltspice"]),
+        "--output", str(output), "--markdown", str(output / "validation_summary.md"),
+    ]
     try:
-        completed = subprocess.run(command, cwd=paths["root"], capture_output=True, text=True,
+        completed = subprocess.run(command, cwd=str(paths["root"]), capture_output=True, text=True,
                                    encoding="utf-8", errors="replace", check=False)
     except OSError as exc:
-        print(json.dumps(_failure("suite", f"VALIDATION_TOOL_ERROR: {exc}"), ensure_ascii=False, separators=(",", ":")))
+        print(json.dumps(_failure("suite", f"VALIDATION_TOOL_ERROR: {exc}", summary_path=summary_path),
+                         ensure_ascii=False, separators=(",", ":")))
         return 2
-    result = _last_json(completed.stdout) or _failure("suite", f"validation suite produced no compact result (exit {completed.returncode})")
-    result.update(entrypoint="run_validation_intent", mode=normalized["mode"], canonical_spec=str(spec_path))
+
+    summary = _suite_json(completed.stdout)
+    if summary is None:
+        result = _failure("suite", f"validation suite produced no result (exit {completed.returncode})",
+                          summary_path=summary_path)
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        return 2
+    result = _compact(summary, summary_path, str(normalized["mode"]))
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-    return 0 if bool(result.get("ok")) and completed.returncode == 0 else 1
+    return 0 if result["ok"] and completed.returncode == 0 else 1
 
 
 if __name__ == "__main__":

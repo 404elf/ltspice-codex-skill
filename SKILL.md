@@ -1,78 +1,74 @@
 ---
 name: ltspice-sim-v2
-description: Portable Codex Skill for generating, simulating, validating, measuring, and schematizing LTspice circuits with deterministic RAW/LOG checks and Weave NET-to-ASC verification.
+description: Independent LTspice circuit generation, simulation, measurement, RAW/LOG validation, and Weave NET-to-ASC verification without the legacy LTSPICE-AI project.
 ---
 
-# LTspice Codex Skill
-
-## Purpose / setup
-
-Use this Skill for LTspice circuit design, modification, simulation, measurement, and schematic generation. The `.net`/`.cir` is the electrical source of truth; never hand-author ASC coordinates. Keep legacy LTSPICE-AI and the old LTspice Skill out of the runtime path.
-
-If `.ltspice-codex-config.json` is missing or invalid, automatically run `py -3 bootstrap.py` from the Skill repository root and use the resulting configuration. Stop only when a required external installation or permission is unavailable. Keep each circuit's current NET, RAW/LOG, optional ASC, Weave result, plots, and summary together.
+# LTspice Simulation v2
 
 ## Fast Path
 
 For LTspice circuit design, simulation, modification, or validation, use this Skill immediately.
 
 - Trust an existing valid local configuration.
-- `AUTO`: simple/passive → `QUICK`; ordinary analog/tolerance → `STANDARD`; switching/power/strong nonlinear/high-risk feedback → `STRICT`; repeated variants → `BATCH`.
+- AUTO: simple/passive → QUICK; ordinary analog/tolerance → STANDARD; switching/power/strong nonlinear/high-risk feedback → STRICT; repeated variants → BATCH.
 - Plan topology, values, analyses, metrics, and tolerance strategy once.
-- Run one deterministic validation entrypoint for the complete plan.
-- Read compact PASS/FAIL first.
+- Run one deterministic validation-intent entrypoint for the complete plan.
+- Read the compact PASS/FAIL result first.
 - On engineering failure, diagnose only the failed requirement.
 - After electrical PASS, run Weave once.
-- `STRICT`: run one final ASC smoke validation.
+- In STRICT, run one final generated-ASC LTspice smoke validation.
 - Stop when proven.
 
-If this Skill is selected and local configuration is valid, do not inspect README, bootstrap, helper source, repository history, installation instructions, or troubleshooting documentation before normal circuit work. Read them only for missing/invalid configuration, explicit setup, infrastructure/helper failure, unexpected behavior, or a user request for implementation details.
+## Purpose and setup
+
+The `.net`/`.cir` is the source of truth. The Skill owns the engineering design; deterministic helpers own simulation proof and artifact bookkeeping. Do not read, reuse, import, or depend on the legacy `ltspice-circuit-simulator` Skill or LTSPICE-AI.
+
+The local configuration is `.ltspice-codex-config.json` beside this file. If it is missing or invalid, automatically run the available bootstrap/setup path and re-check it. When configuration is valid, do not inspect README files, bootstrap code, helper source, repository history, or troubleshooting notes before normal circuit work. Read those only for setup requests, infrastructure/helper failures, unexpected behavior, or implementation questions.
+
+The installed configuration resolves Python, LTspice, the output root, and Weave. Do not make the Agent assemble those paths or executable arguments.
 
 ## Modes
 
-`QUICK`, `STANDARD`, `STRICT`, and `BATCH` are final validation plans, not an execution ladder. `STANDARD`/`STRICT` normally call the validation suite once; do not run a duplicate nominal QUICK first. `accuracy-sensitive` alone does not imply `STRICT`.
-
-- `QUICK`: sufficient nominal validation, fresh RAW/LOG, clean LOG, and Weave `MATCH`.
-- `STANDARD`: one nominal/tolerance plan and Weave `MATCH`.
-- `STRICT`: one complete high-risk plan, Weave `MATCH`, and one final LTspice smoke run of the ASC.
-- `BATCH`: validate variants together; generate ASC only for selected/final candidates.
+`QUICK`, `STANDARD`, `STRICT`, and `BATCH` are final validation plans, not a QUICK → STANDARD → STRICT ladder. Choose the lightest plan that proves the request. `AUTO` selects the plan. Do not run a duplicate nominal QUICK before a STANDARD/STRICT suite unless it has clear engineering value.
 
 ## Execution policy
 
-Plan once. The Agent owns topology, values, trade-offs, requirements, relevant analyses, and genuine design diagnosis. The deterministic layer owns intent normalization, paths/config, schema, dependencies, corners, RAW/LOG, metrics, evidence, and command assembly.
+The Agent decides topology, component values, engineering requirements, relevant analyses, metrics, and genuine design diagnosis. Code handles normalization, paths, schema checks, simulation, RAW/LOG parsing, metric arithmetic, corner expansion, dependency/evidence bookkeeping, and summaries.
 
-Use only this normal-path entrypoint; do not manually build the internal suite spec or concatenate executable/helper/output/config paths:
+Use the thin deterministic entrypoint:
 
-```powershell
-<configured-python> scripts/run_validation_intent.py `
-  --net <final.net> `
-  --intent <validation-intent.json>
+```text
+<configured Python> scripts/run_validation_intent.py --net <final.net> --intent <validation-intent>
 ```
 
-Intent fields are only `mode`, optional `analyses`, `requirements`, `tolerances`, and `required_nets`. An analysis entry is normally `{}` to use the matching directive in the final NET; an explicit `directive` is the only optional analysis detail. Use this shape:
+The intent is a small engineering-facing object containing only `mode`, `analyses`, `requirements`, `tolerances`, and optional `required_nets`. The interface must tolerate mechanically recoverable representation errors (for example comments, trailing commas, safe JSON-like literals, unambiguous aliases, and relative paths); it must not merely replace one fragile Agent-authored JSON schema with another. It must never guess or change engineering meaning.
 
-```json
-{"mode":"STANDARD","analyses":{"ac":{}},"requirements":[
-  {"name":"cutoff","analysis":"ac","measure":"cutoff","signal":"V(out)","reference":"V(in)","target":1000,"tolerance":10}
-]}
-```
+The entrypoint is intentionally thin: intent normalization and validation → configuration/path resolution → canonical existing-suite spec → `run_validation_suite.py` → compact result. It must not implement a second validation system or duplicate LTspice execution, RAW/LOG validation, metric evaluation, corner logic, convergence policy, evidence/cache logic, dependency fingerprinting, or Weave logic.
 
-The entrypoint fills safe defaults, canonicalizes representation-only differences, writes the internal spec beside the circuit output, and delegates to `run_validation_suite.py`. It never deletes requirements, loosens targets, omits requested corners, or turns FAIL into PASS. Prefer one analysis for multiple requirements; add analyses/corners only when existing evidence cannot prove the requirement. Reduce corners only when endpoint worst-case directions are clear; otherwise let the suite decide. Reuse only successful evidence bound to current simulation inputs; metric/target/trace/report changes may reparse it, while changed NET/analysis/parameter/dependency/executable/settings invalidate affected evidence.
+Normal Agent-facing output is compact: `PASS`/`FAIL`, failure class, failed requirement, summary path, LTspice call count, and evidence-reuse count. Full details remain in the existing summary artifact.
 
 ## Required workflow
 
-1. Generate or update the final NET with ground `0`, unique references, required analyses, and `.end`; ordinary parameter changes update the existing NET.
-2. Choose the final mode, define one intent, and call the entrypoint once. The suite performs dry-run, dependency/preflight, fresh RAW/LOG, metrics, corners, and evidence handling.
-3. Read compact PASS/FAIL first. Do not reopen proven RAW/LOG or recalculate passing metrics; diagnose only failed requirements and rerun only invalidated work.
-4. After the exact final NET passes, run Weave once on that NET and accept the ASC only with round-trip `MATCH`; never edit coordinates manually.
-5. In `STRICT`, run the generated ASC once with LTspice as a final parse/model/directive/startup smoke check, not a second engineering suite.
+1. Create or update the exact final NET with explicit ground `0`, unique references, required analyses, and `.end`. Do not hand-author ASC coordinates.
+2. Plan once. Prefer one analysis that proves several requirements; add an analysis or corner only when existing evidence cannot prove the requirement. Use mathematically justified worst-case endpoint reduction when clear; otherwise let the deterministic suite decide.
+3. Call `run_validation_intent.py` once for the complete plan. It must finish representation, schema, path, and default handling before LTspice is called.
+4. Read the compact result first, then the summary only as needed. Do not reopen proven RAW/LOG files or re-reason per corner.
+5. A failed gate is either `PLUMBING/INFRASTRUCTURE FAILURE` or `ENGINEERING FAILURE`. Fix mechanical issues deterministically; re-enter the Agent only for an engineering decision. After failure, diagnose only the affected requirement/evidence.
+6. Do not treat an old artifact as current evidence. Required runs must have fresh RAW and LOG files, and parser/fatal/simulation errors are failures even when LTspice exits with code 0.
+7. Only after the final NET passes required electrical validation, run Weave once on that exact NET. Accept the ASC only when round-trip verification is `MATCH`.
+8. In STRICT, run the generated ASC once with LTspice as the final smoke validation. Do not repeat the full engineering suite for this purpose.
 
 ## Failure handling
 
-Exit code 0 alone is never simulation success. Do not report success without the final NET validation, newly-created RAW/LOG, clean LOG, required metrics/corners, Weave `MATCH`, and—when `STRICT`—successful ASC smoke. Old or unverified artifacts never satisfy a current run; stop after required gates pass.
+Do not silently delete requirements, loosen targets/tolerances, omit explicit corners, or turn a failure into a pass. Do not manually repair ASC coordinates. If the deterministic entrypoint reports an unexplainable infrastructure error, inspect setup/helper details; otherwise keep the next Agent invocation focused on the failed engineering requirement.
 
-## Finalization / artifacts
+If model invocation count is not directly observable, do not infer or fabricate it. Record observable Agent stages, deterministic tool calls, tool-result → new-action transitions, and the cause as `startup`, `plumbing`, `engineering`, or `finalization`.
 
-For ordinary parameter changes, rerun the updated NET and replace current RAW/LOG, then replace the ASC regenerated by Weave from that exact NET. NET and ASC must describe the same current circuit. Preserve history only when explicitly requested; in `BATCH`, generate ASC only for selected/final candidates.
+Do not invent the final blind engineering benchmark. After implementation and plumbing/startup tests, stop with `READY FOR EXTERNAL BLIND BENCHMARK`; the unseen circuit is supplied separately.
+
+## Finalization and artifacts
+
+The artifact update policy is strict: ordinary parameter-only changes update the existing NET, replace the current RAW/LOG after re-simulation, and regenerate the ASC from that exact NET with Weave. NET and ASC must represent the same current circuit state. Do not make versioned copies unless history preservation is requested. In BATCH, generate ASC only for selected/final candidates.
 
 After every successful run, report concisely:
 
@@ -83,8 +79,17 @@ After every successful run, report concisely:
 - final `.log` path
 - Weave verification result path, if generated
 
-Also report requested measurements and validation status. `MATCH` proves connectivity equivalence, not electrical correctness or target compliance.
+Report requested measurements and gate results as well. `MATCH` proves connectivity equivalence; it does not replace LTspice or engineering validation. Once the user requirements and required gates pass, stop.
 
 ## Helper commands
 
-Normal validation uses only `scripts/run_validation_intent.py`. Inspect lower-level helpers only for an entrypoint-reported infrastructure/helper failure or explicit troubleshooting. Weave remains the only NET-to-ASC converter.
+Use the configured Skill Python and paths. These are troubleshooting/reference commands; normal circuit work uses the intent entrypoint above.
+
+```powershell
+& '<configured Python>' '<skill>\scripts\run_ltspice.py' --input '<net-or-asc>' --ltspice '<LTspice.exe>'
+& '<configured Python>' '<skill>\scripts\run_validation_suite.py' --net '<net>' --spec '<canonical-spec>' --ltspice '<LTspice.exe>'
+& '<configured Python>' '<skill>\scripts\parse_raw.py' --raw '<raw>' --trace '<name>'
+& '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<exact-net>' --weave-dir '<Weave CLI>' --node '<node>' --asc '<asc>' --result '<verification>' --force
+```
+
+The public interface change is an adapter, not a second validator. When reporting implementation work, report changed files, diffstat, public interface, conceptual responsibility, and observable test stages—not invented model invocation counts or cosmetic line-count targets.
