@@ -120,6 +120,67 @@ class ValidationIntentTests(unittest.TestCase):
                 "model_policy": "unknown",
             })
 
+    def test_common_intent_aliases_and_safe_field_normalization(self):
+        normalized = intent.normalize_intent({
+            "validation": {
+                "validation_mode": "standard",
+                "analysis_plan": {
+                    "ac": {"type": "ac", "command": ".ac dec 10 10 10k"},
+                },
+                "checks": [{
+                    "id": "gain",
+                    "metric": "gain",
+                    "node": "V(out)",
+                    "reference_trace": "V(in)",
+                    "frequency": 1000,
+                    "expected": 1,
+                    "tol": "5%",
+                }],
+            }
+        })
+        metric = normalized["spec"]["metrics"]["gain"]
+        self.assertEqual(normalized["mode"], "STANDARD")
+        self.assertEqual(metric["kind"], "gain_at")
+        self.assertEqual(metric["trace"], "V(out)")
+        self.assertEqual(metric["reference"], "V(in)")
+        self.assertEqual(metric["x"], 1000)
+        self.assertEqual(metric["target"], 1)
+        self.assertEqual(metric["tolerance_percent"], 5.0)
+
+    def test_grouped_tolerance_forms_share_one_canonical_representation(self):
+        analyses = {"ac": ".ac dec 10 10 10k", "tran": ".tran 0 1m"}
+        forms = [
+            {"tolerances": {"ac": {"parameters": {"R": 5}}, "tran": {"params": {"C": "10%"}}}},
+            {"tolerance_groups": [
+                {"analysis": "ac", "parameters": {"R": {"percent": 5}}},
+                {"analysis": "tran", "corners": {"C": [-10, 10]}},
+            ]},
+            {"tolerances": {"groups": {
+                "ac": {"R": 5}, "tran": {"parameters": {"C": {"low": -10, "high": 10}}},
+            }}},
+        ]
+        canonical = []
+        for form in forms:
+            intent_spec = {"analyses": analyses, **form}
+            canonical.append(intent.normalize_intent(intent_spec)["spec"]["tolerance_groups"])
+        self.assertEqual(canonical[0], canonical[1])
+        self.assertEqual(canonical[1], canonical[2])
+
+    def test_entrypoint_aliases_build_an_absolute_suite_command(self):
+        temp, root, net, config = self._environment()
+        intent_file = root / "intent.json"
+        intent_file.write_text('{"analyses":{"ac":".ac dec 10 10 10k"}}', encoding="utf-8")
+        completed = intent.subprocess.CompletedProcess([], 0, '{"status":"PASS","ok":true}', "")
+        output = io.StringIO()
+        with temp, patch.object(intent.subprocess, "run", return_value=completed) as run, contextlib.redirect_stdout(output):
+            code = intent.main([
+                "--netlist", str(net), "--intent-file", str(intent_file), "--config-file", str(config),
+            ])
+        self.assertEqual(code, 0)
+        command = run.call_args.args[0]
+        self.assertTrue(Path(command[1]).is_absolute())
+        self.assertTrue(command[1].endswith("run_validation_suite.py"))
+
     def test_relative_paths_resolve_from_config_and_net(self):
         temp, root, net, config = self._environment()
         with temp:

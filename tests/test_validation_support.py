@@ -12,6 +12,8 @@ sys.path.insert(0, str(SCRIPTS))
 from validation_support import (  # noqa: E402
     EvidenceStore,
     dependency_manifest,
+    parameter_values,
+    parse_parameters,
     stage_net_with_dependencies,
     simulation_evidence_payload,
     simulation_evidence_key,
@@ -19,6 +21,16 @@ from validation_support import (  # noqa: E402
 
 
 class ValidationSupportTests(unittest.TestCase):
+    def test_combined_param_line_parses_all_assignments(self) -> None:
+        text = ".param R=10k C=100n L={R*C} ; editable values\n.end\n"
+        assignments, errors = parse_parameters(text)
+        self.assertEqual(errors, [])
+        self.assertEqual([item["name"] for item in assignments], ["R", "C", "L"])
+        values, value_errors = parameter_values(text)
+        self.assertEqual(value_errors, [])
+        self.assertEqual(values["r"]["value"], "10k")
+        self.assertEqual(values["c"]["value"], "100n")
+
     def test_relative_dependencies_are_manifested_and_staged(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

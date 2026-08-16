@@ -23,10 +23,17 @@ MODES = {"AUTO", "QUICK", "STANDARD", "STRICT", "BATCH"}
 KINDS = {"tran", "ac", "dc", "op", "noise", "tf", "pz"}
 MEASURE_ALIASES = {
     "p2p": "peak_to_peak",
+    "vpp": "peak_to_peak",
+    "peak_to_peak_voltage": "peak_to_peak",
     "cutoff": "fc_3db",
     "cutoff_3db": "fc_3db",
+    "cutoff_frequency": "fc_3db",
+    "fc": "fc_3db",
+    "-3db": "fc_3db",
     "gain": "gain_at",
+    "gain_at_frequency": "gain_at",
     "absolute_peak": "abs_max",
+    "peak_abs": "abs_max",
     "last": "final",
 }
 AXIS_METRICS = {"value_at", "value_at_x", "gain_at", "gain_at_frequency", "fc_3db", "cutoff_3db"}
@@ -58,11 +65,29 @@ def _number(value: object, label: str) -> float:
     return result
 
 
+def _signed_number(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise IntentError(f"{label} must be numeric")
+    try:
+        return float(_text(value, label).removesuffix("%").strip())
+    except ValueError as exc:
+        raise IntentError(f"{label} must be numeric") from exc
+
+
 def _take(data: dict[str, object], *names: str) -> object | None:
     found = [name for name in names if name in data]
     if len(found) > 1:
         raise IntentError(f"use only one of: {', '.join(found)}")
     return data.pop(found[0]) if found else None
+
+
+def _move_aliases(data: dict[str, object], canonical: str, *aliases: str) -> None:
+    names = {canonical.casefold(), *(alias.casefold() for alias in aliases)}
+    found = [key for key in list(data) if str(key).casefold() in names]
+    if len(found) > 1:
+        raise IntentError(f"use only one of: {', '.join(str(key) for key in found)}")
+    if found:
+        data[canonical] = data.pop(found[0])
 
 
 def _resolve(value: object, base: Path) -> Path:
@@ -204,6 +229,9 @@ def _analysis(label: str, raw: object) -> dict[str, object]:
         data = dict(raw)
     else:
         raise IntentError(f"analyses.{label} must be an object, directive string, or null")
+    _move_aliases(data, "name", "id", "analysis_name")
+    _move_aliases(data, "kind", "type", "analysis_type")
+    _move_aliases(data, "directive", "command", "analysis_directive")
     name = _text(data.pop("name", label), f"analyses.{label}.name")
     direct = data.pop("directive", None)
     inferred = None
@@ -240,7 +268,11 @@ def _analyses(raw: object) -> list[dict[str, object]]:
         kind = match.group(1).lower()
         return [_analysis(kind, {"kind": kind, "directive": raw})]
     if isinstance(raw, dict):
-        if any(key in raw for key in ("name", "kind", "directive")):
+        object_fields = {
+            "name", "id", "analysis_name", "kind", "type", "analysis_type",
+            "directive", "command", "analysis_directive",
+        }
+        if any(str(key).casefold() in object_fields for key in raw):
             entries = [(str(raw.get("name") or raw.get("kind") or "analysis"), raw)]
         else:
             entries = list(raw.items())
@@ -251,8 +283,14 @@ def _analyses(raw: object) -> list[dict[str, object]]:
                 match = re.match(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", value, re.I)
                 label = match.group(1).lower() if match else value
                 entries.append((label, value))
-            elif isinstance(value, dict) and (value.get("name") or value.get("kind")):
-                entries.append((str(value.get("name") or value.get("kind")), value))
+            elif isinstance(value, dict) and any(
+                str(key).casefold() in {
+                    "name", "id", "analysis_name", "kind", "type", "analysis_type",
+                    "directive", "command", "analysis_directive",
+                }
+                for key in value
+            ):
+                entries.append((str(value.get("name") or value.get("kind") or value.get("type") or f"analysis_{index + 1}"), value))
             else:
                 raise IntentError(f"analyses[{index}] requires a kind/name or directive")
     else:
@@ -266,7 +304,10 @@ def _analyses(raw: object) -> list[dict[str, object]]:
 
 REQUIREMENT_FIELDS = {
     "name", "id", "measure", "kind", "signal", "trace", "analysis", "reference", "ref",
-    "at", "x", "target", "min", "max", "response", "tolerance", "tolerance_percent",
+    "metric", "metric_kind", "metric_type", "node", "trace_name", "waveform", "output_trace",
+    "reference_trace", "ref_trace", "analysis_name", "for_analysis", "at", "x", "frequency", "time",
+    "x_value", "target", "expected", "min", "max", "response", "tolerance", "tol", "tolerance_pct",
+    "tolerance_percent",
 }
 
 
@@ -328,6 +369,14 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
         if not isinstance(raw_item, dict):
             raise IntentError(f"requirements[{index}] must be an object")
         data = dict(raw_item)
+        _move_aliases(data, "name", "id", "key")
+        _move_aliases(data, "measure", "metric", "metric_kind", "metric_type")
+        _move_aliases(data, "signal", "trace", "node", "trace_name", "waveform", "output_trace")
+        _move_aliases(data, "analysis", "analysis_name", "for_analysis")
+        _move_aliases(data, "reference", "ref", "reference_trace", "ref_trace")
+        _move_aliases(data, "at", "x", "frequency", "time", "x_value")
+        _move_aliases(data, "target", "expected")
+        _move_aliases(data, "tolerance", "tol", "tolerance_pct", "tolerance_percent")
         name = data.pop("name", data.pop("id", f"requirement_{index + 1}"))
         name = _text(name, f"requirements[{index}].name")
         if name in result:
@@ -344,6 +393,10 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
             if len(analyses) != 1:
                 raise IntentError(f"requirements.{name}: analysis is required with multiple analyses")
             selected = analyses[0]["name"]
+        elif isinstance(selected, dict):
+            selected_data = dict(selected)
+            _move_aliases(selected_data, "name", "id", "kind", "type")
+            selected = selected_data.get("name")
         selected_text = _text(selected, f"requirements.{name}.analysis")
         if known and selected_text.casefold() not in known:
             raise IntentError(f"requirements.{name}: unknown analysis {selected_text}")
@@ -379,24 +432,60 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
     return result
 
 
+def _tolerance_bounds(value: object, label: str) -> list[float]:
+    if isinstance(value, dict):
+        data = dict(value)
+        _move_aliases(data, "percent", "pct")
+        _move_aliases(data, "low", "minimum", "min")
+        _move_aliases(data, "high", "maximum", "max")
+        if "percent" in data:
+            percent = _number(data.pop("percent"), f"{label}.percent")
+            if data:
+                raise IntentError(f"{label}: unsupported fields: {', '.join(sorted(data))}")
+            return [-percent, percent]
+        if "low" in data and "high" in data:
+            low = _signed_number(data.pop("low"), f"{label}.low")
+            high = _signed_number(data.pop("high"), f"{label}.high")
+            if data:
+                raise IntentError(f"{label}: unsupported fields: {', '.join(sorted(data))}")
+            if low > high:
+                raise IntentError(f"{label}: low must not exceed high")
+            return [low, high]
+        raise IntentError(f"{label} must contain percent or low/high")
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise IntentError(f"{label} bounds must contain exactly two values")
+        low = _signed_number(value[0], f"{label}[0]")
+        high = _signed_number(value[1], f"{label}[1]")
+        if low > high:
+            raise IntentError(f"{label}: low must not exceed high")
+        return [low, high]
+    percent = _number(value, label)
+    return [-percent, percent]
+
+
 def _tolerance_payload(raw: object, label: str) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise IntentError(f"{label} must be an object with parameters")
     data = dict(raw)
-    strategy = _text(data.pop("strategy", data.pop("corner_strategy", "auto")), "tolerances.strategy").lower()
+    _move_aliases(data, "strategy", "corner_strategy", "cornerStrategy")
+    strategy = _text(data.pop("strategy", "auto"), "tolerances.strategy").lower()
     if strategy not in {"auto", "cartesian", "monotonic"}:
         raise IntentError(f"unsupported tolerance strategy: {strategy}")
+    _move_aliases(data, "objectives", "objective")
+    _move_aliases(data, "parameters", "params", "values", "variations", "tolerance", "corner_values", "corners")
     values = data.pop("parameters", None)
     if values is None:
-        raise IntentError("tolerances.parameters must be a non-empty object")
+        metadata = {"analysis", "analysis_name", "for_analysis", "kind", "name", "id"}
+        if any(str(key).casefold() in metadata for key in data):
+            raise IntentError(f"{label}.parameters must be a non-empty object")
+        values = data
+        data = {}
     if not isinstance(values, dict) or not values:
-        raise IntentError("tolerances.parameters must be a non-empty object")
+        raise IntentError(f"{label}.parameters must be a non-empty object")
     corners: dict[str, list[float]] = {}
     for name, value in values.items():
-        if isinstance(value, dict):
-            value = value.get("percent")
-        percent = _number(value, f"tolerances.parameters.{name}")
-        corners[str(name)] = [-percent, percent]
+        corners[str(name)] = _tolerance_bounds(value, f"{label}.parameters.{name}")
     result: dict[str, object] = {"corners": corners}
     if strategy != "auto":
         result["corner_strategy"] = strategy
@@ -427,45 +516,79 @@ def _tolerance_analysis(label: object, analyses: list[dict[str, object]]) -> str
     return name
 
 
+def _tolerance_group(raw: object, label: str, analyses: list[dict[str, object]], default_analysis: object = None) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        raise IntentError(f"{label} must be an object")
+    data = dict(raw)
+    _move_aliases(data, "analysis", "analysis_name", "for_analysis")
+    if "analysis" not in data and "kind" in data and _analysis_name(data["kind"], analyses):
+        data["analysis"] = data.pop("kind")
+    if "analysis" not in data and default_analysis is not None:
+        data["analysis"] = default_analysis
+    if "analysis" not in data:
+        raise IntentError(f"{label} requires analysis")
+    analysis = _tolerance_analysis(data.pop("analysis"), analyses)
+    _move_aliases(data, "name", "id")
+    data.pop("name", None)
+    payload = _tolerance_payload(data, label)
+    payload["analysis"] = analysis
+    return payload
+
+
 def _tolerances(raw: object, analyses: list[dict[str, object]]) -> dict[str, object]:
     if raw is None:
         return {}
     if isinstance(raw, list):
-        groups = raw
-    elif isinstance(raw, dict):
-        reserved = {"parameters", "strategy", "corner_strategy", "objectives", "analysis"}
-        if any(key in raw for key in reserved):
-            if "analysis" in raw:
-                group = dict(raw)
-                analysis = _tolerance_analysis(group.pop("analysis"), analyses)
-                payload = _tolerance_payload(group, "tolerances")
-                payload["analysis"] = analysis
-                return {"tolerance_groups": [payload]}
-            return _tolerance_payload(raw, "tolerances")
-        groups = raw.get("by_analysis", raw.get("per_analysis", raw.get("analyses")))
-        if groups is None:
-            groups = raw
-        if not isinstance(groups, dict):
-            raise IntentError("tolerances.by_analysis must be an object")
-        normalized: list[dict[str, object]] = []
-        for label, value in groups.items():
-            payload = _tolerance_payload(value, f"tolerances.{label}")
-            payload["analysis"] = _tolerance_analysis(label, analyses)
-            normalized.append(payload)
+        normalized = [_tolerance_group(item, f"tolerances[{index}]", analyses) for index, item in enumerate(raw)]
         return {"tolerance_groups": normalized}
-    else:
+    if not isinstance(raw, dict):
         raise IntentError("tolerances must be an object or list")
 
-    normalized = []
-    for index, item in enumerate(groups):
-        if not isinstance(item, dict) or "analysis" not in item:
-            raise IntentError(f"tolerances[{index}] requires analysis and parameters")
-        data = dict(item)
-        analysis = _tolerance_analysis(data.pop("analysis"), analyses)
-        payload = _tolerance_payload(data, f"tolerances[{index}]")
-        payload["analysis"] = analysis
-        normalized.append(payload)
-    return {"tolerance_groups": normalized}
+    data = dict(raw)
+    _move_aliases(data, "groups", "by_analysis", "per_analysis", "analyses", "tolerance_groups")
+    if "groups" in data:
+        groups = data.pop("groups")
+        group_defaults: dict[str, object] = {}
+        _move_aliases(data, "strategy", "corner_strategy", "cornerStrategy")
+        if "strategy" in data:
+            group_defaults["strategy"] = data.pop("strategy")
+        _move_aliases(data, "objectives", "objective")
+        if "objectives" in data:
+            group_defaults["objectives"] = data.pop("objectives")
+        if data:
+            raise IntentError(f"tolerances: unsupported fields: {', '.join(sorted(data))}")
+        if isinstance(groups, list):
+            normalized = []
+            for index, item in enumerate(groups):
+                item_data = dict(item) if isinstance(item, dict) else item
+                if isinstance(item_data, dict):
+                    for key, value in group_defaults.items():
+                        item_data.setdefault(key, value)
+                normalized.append(_tolerance_group(item_data, f"tolerances.groups[{index}]", analyses))
+        elif isinstance(groups, dict):
+            normalized = []
+            for label, value in groups.items():
+                value_data = dict(value) if isinstance(value, dict) else value
+                if isinstance(value_data, dict):
+                    for key, default in group_defaults.items():
+                        value_data.setdefault(key, default)
+                normalized.append(_tolerance_group(value_data, f"tolerances.groups.{label}", analyses, label))
+        else:
+            raise IntentError("tolerances.groups must be an object or list")
+        return {"tolerance_groups": normalized}
+
+    if any(str(key).casefold() in {"analysis", "analysis_name", "for_analysis", "kind"} for key in data):
+        return {"tolerance_groups": [_tolerance_group(data, "tolerances", analyses)]}
+
+    reserved = {"strategy", "corner_strategy", "cornerstrategy", "objectives", "objective", "parameters", "params", "values", "variations", "tolerance", "corner_values", "corners"}
+    if any(str(key).casefold() in reserved for key in data):
+        return _tolerance_payload(data, "tolerances")
+
+    if data and all(_analysis_name(key, analyses) for key in data):
+        normalized = [_tolerance_group(value, f"tolerances.{label}", analyses, label) for label, value in data.items()]
+        return {"tolerance_groups": normalized}
+
+    return _tolerance_payload(data, "tolerances")
 
 
 def _model_policy(raw: object) -> str | None:
@@ -488,7 +611,7 @@ def normalize_intent(intent: object) -> dict[str, object]:
     if not isinstance(intent, dict):
         raise IntentError("intent must be an object")
     intent = dict(intent)
-    wrapper_keys = [key for key in ("intent", "validation_intent") if key in intent]
+    wrapper_keys = [key for key in ("intent", "validation_intent", "validation") if key in intent]
     if len(wrapper_keys) > 1:
         raise IntentError("use only one of: intent, validation_intent")
     wrapper = intent.pop(wrapper_keys[0]) if wrapper_keys else None
@@ -498,12 +621,16 @@ def normalize_intent(intent: object) -> dict[str, object]:
         if not isinstance(wrapper, dict):
             raise IntentError("intent wrapper must contain an object")
         intent = dict(wrapper)
-    aliases = {"analysis": "analyses", "metrics": "requirements", "tolerance": "tolerances", "required_net": "required_nets"}
-    for alias, canonical in aliases.items():
-        if alias in intent:
-            if canonical in intent:
-                raise IntentError(f"use only one of: {alias}, {canonical}")
-            intent[canonical] = intent.pop(alias)
+    top_level_aliases = {
+        "mode": ("validation_mode",),
+        "analyses": ("analysis", "analysis_plan", "simulation_analyses"),
+        "requirements": ("metrics", "checks", "assertions", "validation_requirements"),
+        "tolerances": ("tolerance", "tolerance_groups", "corner_tolerances", "parameter_tolerances"),
+        "required_nets": ("required_net", "required_nodes", "required_nodes_list"),
+        "model_policy": ("device_policy", "model_requirement"),
+    }
+    for canonical, aliases in top_level_aliases.items():
+        _move_aliases(intent, canonical, *aliases)
     allowed = {"mode", "analyses", "requirements", "tolerances", "required_nets", "model_policy"}
     unknown = sorted(set(intent) - allowed)
     if unknown:
@@ -631,9 +758,11 @@ def _compact(summary: dict[str, object], fallback_summary: Path, mode: str) -> d
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run LTspice validation from a compact engineering intent.")
-    parser.add_argument("--net", required=True, type=Path)
-    parser.add_argument("--intent", required=True, type=Path)
-    parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--net", "--netlist", "--net-file", dest="net", required=True, type=Path)
+    parser.add_argument(
+        "--intent", "--validation-intent", "--intent-file", dest="intent", required=True, type=Path,
+    )
+    parser.add_argument("--config", "--config-file", dest="config", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     paths: dict[str, Path] | None = None
     output: Path | None = None
