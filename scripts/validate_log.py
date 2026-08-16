@@ -10,21 +10,21 @@ import sys
 from pathlib import Path
 
 
+RECOVERY_SUCCESS_RE = re.compile(
+    r"(?:gmin\s+stepping|source\s+stepping)\s+succeeded\s+in\s+finding\s+"
+    r"(?:the\s+)?operating\s+point",
+    re.IGNORECASE,
+)
+
+
 def find_errors(text: str) -> list[str]:
     """Return lines that indicate an unresolved LTspice failure.
 
-    LTspice can recover from a direct Newton operating-point failure with Gmin
-    stepping. That diagnostic is ignored only when the same log confirms that
-    Gmin stepping found the operating point.
+    LTspice may recover from a direct Newton operating-point failure with Gmin
+    or source stepping. The direct Newton diagnostic is ignored only when a
+    later line in the same log confirms that one of those methods found the
+    operating point.
     """
-
-    recovered_gmin = bool(
-        re.search(
-            r"gmin\s+stepping\s+succeeded\s+in\s+finding\s+the\s+operating\s+point",
-            text,
-            re.IGNORECASE,
-        )
-    )
     patterns = (
         re.compile(r"^\s*(?:error|fatal)\b", re.IGNORECASE),
         re.compile(
@@ -36,9 +36,17 @@ def find_errors(text: str) -> list[str]:
         re.compile(r"\bdirect\s+newton\s+iteration\s+failed\s+to\s+find\s+"
                    r"(?:the\s+)?operating\s+point", re.IGNORECASE),
     )
+    lines = text.splitlines()
+    recovery_after = [False] * len(lines)
+    seen_recovery = False
+    for index in range(len(lines) - 1, -1, -1):
+        recovery_after[index] = seen_recovery
+        if RECOVERY_SUCCESS_RE.search(lines[index]):
+            seen_recovery = True
+
     errors: list[str] = []
-    for line in text.splitlines():
-        if recovered_gmin and patterns[-1].search(line):
+    for index, line in enumerate(lines):
+        if recovery_after[index] and patterns[-1].search(line):
             continue
         if any(pattern.search(line) for pattern in patterns[:-1]):
             errors.append(line)
@@ -70,3 +78,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -10,9 +10,24 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from run_ltspice import build_command, stage_asc_with_dependencies  # noqa: E402
+from validate_log import find_errors  # noqa: E402
 
 
 class LTspiceCommandTests(unittest.TestCase):
+    def test_source_stepping_recovery_clears_prior_newton_diagnostic(self) -> None:
+        log = (
+            "Direct Newton iteration failed to find operating point.\n"
+            "Gmin stepping failed to find operating point.\n"
+            "Source stepping succeeded in finding the operating point.\n"
+        )
+        self.assertEqual(find_errors(log), [])
+
+    def test_newton_diagnostic_without_later_recovery_remains_fatal(self) -> None:
+        self.assertEqual(
+            find_errors("Direct Newton iteration failed to find operating point.\n"),
+            ["Direct Newton iteration failed to find operating point."],
+        )
+
     def test_binary_raw_is_the_default(self) -> None:
         command = build_command(Path("LTspice.exe"), Path("circuit.net"))
         self.assertNotIn("-ascii", command)
@@ -40,3 +55,4 @@ class LTspiceCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
