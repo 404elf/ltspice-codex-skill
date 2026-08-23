@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from preflight import terminals, weave_compatibility  # noqa: E402
 from validate_log import find_errors  # noqa: E402
-from weave_convert import sha256  # noqa: E402
+from weave_convert import resolve_tools, sha256  # noqa: E402
 
 
 class HelperUnitTests(unittest.TestCase):
@@ -49,6 +50,19 @@ class HelperUnitTests(unittest.TestCase):
         details = result["details"]
         self.assertTrue(details["inline_subckt"])
         self.assertTrue(details["validation_only_directives"])
+
+    def test_weave_tools_resolve_from_either_config_key(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            weave = root / "weave" / "cli"
+            weave.mkdir(parents=True)
+            node = root / "node.exe"
+            node.write_text("node", encoding="utf-8")
+            config = root / ".ltspice-codex-config.json"
+            config.write_text(json.dumps({"weave_cli": "weave/cli", "node": "node.exe"}), encoding="utf-8")
+            self.assertEqual(resolve_tools(None, None, config), (weave.resolve(), str(node.resolve())))
+            config.write_text(json.dumps({"weave_dir": "weave/cli", "node": "node.exe"}), encoding="utf-8")
+            self.assertEqual(resolve_tools(None, None, config), (weave.resolve(), str(node.resolve())))
 
 
 if __name__ == "__main__":

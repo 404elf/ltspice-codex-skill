@@ -89,7 +89,7 @@ Use the configured Skill Python and paths. These are troubleshooting/reference c
 & '<configured Python>' '<skill>\scripts\run_ltspice.py' --input '<net-or-asc>' --ltspice '<LTspice.exe>'
 & '<configured Python>' '<skill>\scripts\run_validation_suite.py' --net '<net>' --spec '<canonical-spec>' --ltspice '<LTspice.exe>'
 & '<configured Python>' '<skill>\scripts\parse_raw.py' --raw '<raw>' --trace '<name>'
-& '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<exact-net>' --weave-dir '<Weave CLI>' --node '<node>' --asc '<asc>' --result '<verification>' --force
+& '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<exact-net>' --force
 ```
 
 The public interface change is an adapter, not a second validator. When reporting implementation work, report changed files, diffstat, public interface, conceptual responsibility, and observable test stages—not invented model invocation counts or cosmetic line-count targets.
