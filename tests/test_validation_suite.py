@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 import run_validation_suite as suite  # noqa: E402
 from run_validation_suite import (  # noqa: E402
     check_metric,
+    bounded_job_prefix,
     can_use_exact_source,
     coalesce_analyses,
     dry_run_spec,
@@ -32,6 +33,15 @@ from run_validation_suite import (  # noqa: E402
 
 
 class ValidationSuiteUnitTests(unittest.TestCase):
+    def test_long_job_prefix_uses_stable_short_artifact_id(self) -> None:
+        output = Path("C:/" + "long-output/" * 18)
+        prefix = "circuit__" + "corner-" + ("parameter-description-" * 20)
+        first = bounded_job_prefix(output, prefix)
+        second = bounded_job_prefix(output, prefix)
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("job-"))
+        self.assertLess(len(str(output / f"{first}.run-report.json")), len(str(output / f"{prefix}.run-report.json")))
+
     def test_parameter_replacement_updates_existing_value_and_adds_new_value(self) -> None:
         source = ".param R=10k\nV1 in 0 1\n.end\n"
         updated = replace_parameters(source, {"R": "12k", "C": "1n"})
