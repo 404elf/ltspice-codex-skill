@@ -17,6 +17,7 @@ __pycache__/
 *.json
 !.github/
 !tests/*.json
+!.ltspice-codex-config.example.json
 *.png
 *.jpg
 *.tsv
