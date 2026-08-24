@@ -67,6 +67,12 @@ validation suite 的核心调用形式为：
 
 RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需要文本调试时给 `scripts/run_ltspice.py` 增加 `--ascii`。
 
+模型与容差说明：
+
+- `model_policy: real_device_required` 只是拦截已知 generic placeholder 的保护规则，不是模型来源、版本或真实性的 provenance certification；具体模型仍需由用户或工程流程确认。
+- grouped tolerance 可以同时绑定多个 analysis；Skill 会把常见写法规范化为同一个 canonical tolerance plan。
+- LTspice 中的 binary/non-text 模型资产不一定能作为普通 `.lib`/`.include` 文件被 staging。遇到这种情况必须使用明确可读取的文本模型或修复依赖来源，不能把 staging 失败当成仿真成功，也不会改写 LTspice 安装目录。
+
 最终 NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；`STRICT` 还会运行 Weave 生成的 ASC。ASC 校验会在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`。
 
 ## 输出目录和文件

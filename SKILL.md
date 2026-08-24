@@ -41,9 +41,9 @@ Use the thin deterministic entrypoint:
 <configured Python> "<Skill root>\scripts\run_validation_intent.py" --net <final.net> --intent <validation-intent>
 ```
 
-Use the absolute Skill path above; the current working directory is irrelevant. The intent is a small engineering-facing object containing only `mode`, `analyses`, `requirements`, `tolerances`, optional `required_nets`, and optional `model_policy`. Common aliases such as `analysis_plan`, `checks`, `assertions`, `tolerance_groups`, `params`, and `expected` are normalized safely. Requirements may be top-level or nested under an analysis; tolerances may be global or grouped by analysis, and all grouped forms become one canonical tolerance-group plan. Set `model_policy: real_device_required` when concrete devices are required; known generic placeholders such as `UniversalOpAmp2` are rejected before LTspice. The interface must tolerate mechanically recoverable representation errors (for example comments, trailing commas, safe JSON-like literals, unambiguous aliases, and relative paths); it must not merely replace one fragile Agent-authored JSON schema with another. It must never guess or change engineering meaning.
+Use the absolute Skill path above; the current working directory is irrelevant. The intent is a small engineering-facing object containing only `mode`, `analyses`, `requirements`, `tolerances`, optional `required_nets`, and optional `model_policy`. Common aliases such as `analysis_plan`, `checks`, `assertions`, `tolerance_groups`, `params`, and `expected` are normalized safely. Requirements may be top-level or nested under an analysis. Tolerances may be global or grouped by analysis; grouped tolerance forms are canonicalized into one plan so one tolerance definition can cover multiple analyses without duplicating circuit intent. Set `model_policy: real_device_required` when concrete devices are required. This is only a generic-placeholder guard (for example rejecting `UniversalOpAmp2`); it is not model-provenance certification and does not prove who supplied, validated, or characterized a model. The interface must tolerate mechanically recoverable representation errors (for example comments, trailing commas, safe JSON-like literals, unambiguous aliases, and relative paths); it must not merely replace one fragile Agent-authored JSON schema with another. It must never guess or change engineering meaning.
 
-The entrypoint is intentionally thin: intent normalization and validation → configuration/path resolution → canonical existing-suite spec → `run_validation_suite.py` → compact result. It must not implement a second validation system or duplicate LTspice execution, RAW/LOG validation, metric evaluation, corner logic, convergence policy, evidence/cache logic, dependency fingerprinting, or Weave logic.
+The entrypoint is intentionally thin: intent normalization and validation → configuration/path resolution → canonical existing-suite spec → `run_validation_suite.py` → compact result. It must not implement a second validation system or duplicate LTspice execution, RAW/LOG validation, metric evaluation, corner logic, convergence policy, evidence/cache logic, dependency fingerprinting, or Weave logic. Model dependencies must remain usable by the deterministic runner. Binary or otherwise non-text LTspice model assets may not be stageable as ordinary `.lib`/`.include` files; treat that as an infrastructure/model-asset limitation and require an explicitly usable readable model rather than silently rewriting the LTspice installation or passing without the model.
 
 Normal Agent-facing output is compact: `PASS`/`FAIL`, failure class, failed requirement, summary path, LTspice call count, and evidence-reuse count. Full details remain in the existing summary artifact.
 
@@ -61,10 +61,6 @@ Normal Agent-facing output is compact: `PASS`/`FAIL`, failure class, failed requ
 ## Failure handling
 
 Do not silently delete requirements, loosen targets/tolerances, omit explicit corners, or turn a failure into a pass. Do not manually repair ASC coordinates. If the deterministic entrypoint reports an unexplainable infrastructure error, inspect setup/helper details; otherwise keep the next Agent invocation focused on the failed engineering requirement.
-
-If model invocation count is not directly observable, do not infer or fabricate it. Record observable Agent stages, deterministic tool calls, tool-result → new-action transitions, and the cause as `startup`, `plumbing`, `engineering`, or `finalization`.
-
-Do not invent the final blind engineering benchmark. After implementation and plumbing/startup tests, stop with `READY FOR EXTERNAL BLIND BENCHMARK`; the unseen circuit is supplied separately.
 
 ## Finalization and artifacts
 
@@ -91,5 +87,3 @@ Use the configured Skill Python and paths. These are troubleshooting/reference c
 & '<configured Python>' '<skill>\scripts\parse_raw.py' --raw '<raw>' --trace '<name>'
 & '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<exact-net>' --force
 ```
-
-The public interface change is an adapter, not a second validator. When reporting implementation work, report changed files, diffstat, public interface, conceptual responsibility, and observable test stages—not invented model invocation counts or cosmetic line-count targets.
