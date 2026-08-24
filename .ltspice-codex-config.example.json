@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "python": ".venv/Scripts/python.exe",
+  "ltspice": "C:/Program Files/ADI/LTspice/LTspice.exe",
+  "node": "node",
+  "npm": "npm",
+  "weave_cli": "tools/weave/cli",
+  "weave_source": "https://github.com/senolgulgonul/weave.git",
+  "weave_revision": "feb1f2bd9019d966fcaa12f276936299267c798b",
+  "weave_expected_commit": "feb1f2bd9019d966fcaa12f276936299267c798b",
+  "weave_version": "1.0.0",
+  "elkjs_version": "0.9.3",
+  "output_root": "outputs"
+}

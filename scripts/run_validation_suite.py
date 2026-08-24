@@ -64,6 +64,16 @@ def json_hash(value: object) -> str:
     return support_json_hash(value)
 
 
+def bounded_job_prefix(output: Path, prefix: str) -> str:
+    """Keep temporary and artifact paths short while retaining stable identity."""
+
+    stage_probe = output / ".validation-suite-00000000000000000000000000000000" / f"{prefix}-stage"
+    report_probe = output / f"{prefix}.run-report.json"
+    if max(len(str(stage_probe)), len(str(report_probe))) <= 220:
+        return prefix
+    return f"job-{support_json_hash({'prefix': prefix})[:12]}"
+
+
 def parse_number(value: object) -> float:
     if isinstance(value, (int, float)):
         return float(value)
@@ -1102,6 +1112,7 @@ def main() -> int:
                 else:
                     rendered_text = render_analysis_net(source_text, analysis_key, params)
                     prefix = f"{net.stem}__{job_name}"
+                prefix = bounded_job_prefix(output, prefix)
                 raw_destination = output / f"{prefix}.raw"
                 log_destination = output / f"{prefix}.log"
                 report_destination = output / f"{prefix}.run-report.json"
