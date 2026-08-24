@@ -25,6 +25,10 @@ outputs/
 test-runs/
 !tests/quick_rc.net
 
+# Local overnight review artifacts
+FINAL_OVERNIGHT_CAPSTONE_REPORT.md
+OVERNIGHT_FREEZE_CANDIDATE_REPORT.md
+
 # Tool downloads/installations
 tools/
 node_modules/
