@@ -12,9 +12,12 @@ import argparse
 import ast
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from validation_support import dependency_manifest, stage_net_with_dependencies
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,10 +217,58 @@ def resolve_paths(net_value: object, config_path: Path | None = None, *, cwd: Pa
     root = config["output_root"]
     try:
         net.parent.relative_to(root)
-        output = net.parent if net.parent != root else root / net.stem
+        if net.parent.name.casefold() == f"{net.stem}_files".casefold():
+            output = net.parent.parent
+        else:
+            output = net.parent if net.parent != root else root / net.stem
     except ValueError:
         output = root / net.stem
-    return {"net": net, "output": output.resolve(), **config}
+    output = output.resolve()
+    support = output / f"{net.stem}_files"
+    return {
+        "net": net,
+        "input_net": net,
+        "output": output,
+        "support": support.resolve(),
+        "canonical_net": (support / net.name).resolve(),
+        "asc": (output / f"{net.stem}.asc").resolve(),
+        "weave_result": (support / f"{net.stem}.weave-verification.txt").resolve(),
+        **config,
+    }
+
+
+def prepare_canonical_net(paths: dict[str, Path]) -> Path:
+    """Copy/promote the final NET into the delivery support directory.
+
+    Readable model dependencies are staged beside the canonical NET so the
+    support directory is self-contained for derived analyses and ASC smoke
+    validation.  The caller's input NET is never deleted or overwritten.
+    """
+
+    source = paths["input_net"].resolve()
+    support = paths["support"].resolve()
+    canonical = paths["canonical_net"].resolve()
+    support.mkdir(parents=True, exist_ok=True)
+    if source == canonical:
+        return canonical
+
+    source_text = source.read_text(encoding="utf-8", errors="replace")
+    dependencies = dependency_manifest(source, source_text)
+    stageable_dependencies = any(
+        item.get("exists") and item.get("content_verified")
+        for item in dependencies.get("files", [])
+        if isinstance(item, dict)
+    )
+    if dependencies.get("ok") and stageable_dependencies:
+        try:
+            staged = stage_net_with_dependencies(source, source_text, support, dependencies)
+            return staged.resolve()
+        except (OSError, ValueError):
+            pass
+    # Keep the exact source available to the suite so its dry-run can report
+    # missing/unusable dependencies deterministically.
+    shutil.copy2(source, canonical)
+    return canonical
 
 
 def _analysis(label: str, raw: object) -> dict[str, object]:
@@ -732,7 +783,12 @@ def _failure_class(summary: dict[str, object]) -> str:
     return "ENGINEERING FAILURE"
 
 
-def _compact(summary: dict[str, object], fallback_summary: Path, mode: str) -> dict[str, object]:
+def _compact(
+    summary: dict[str, object],
+    fallback_summary: Path,
+    mode: str,
+    paths: dict[str, Path] | None = None,
+) -> dict[str, object]:
     artifacts = summary.get("artifact_paths", {})
     if not isinstance(artifacts, dict):
         artifacts = {}
@@ -744,7 +800,7 @@ def _compact(summary: dict[str, object], fallback_summary: Path, mode: str) -> d
     failed.extend(str(item) for item in summary.get("failed_corners", []) or [])
     if not failed:
         failed.extend(str(item) for item in summary.get("failures", []) or [])
-    return {
+    result = {
         "status": "PASS" if bool(summary.get("ok")) else "FAIL",
         "ok": bool(summary.get("ok")),
         "failure_class": _failure_class(summary),
@@ -754,6 +810,21 @@ def _compact(summary: dict[str, object], fallback_summary: Path, mode: str) -> d
         "evidence_reused": int(summary.get("evidence_reused", 0) or 0),
         "mode": mode,
     }
+    if paths is not None:
+        result["output_directory"] = str(paths["output"])
+        result["support_directory"] = str(paths["support"])
+        result["canonical_net"] = str(paths["net"])
+        result["expected_asc"] = str(paths["asc"])
+        result["expected_weave_result"] = str(paths["weave_result"])
+        result["artifact_paths"] = {
+            "output_directory": str(paths["output"]),
+            "support_directory": str(paths["support"]),
+            "net": str(paths["net"]),
+            "asc": str(paths["asc"]),
+            "weave_verification": str(paths["weave_result"]),
+            "validation_summary": str(summary_path),
+        }
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -772,19 +843,23 @@ def main(argv: list[str] | None = None) -> int:
         if not intent_path.is_file():
             raise IntentError(f"INTENT_NOT_FOUND: {intent_path}")
         normalized = normalize_intent(parse_intent_text(intent_path.read_text(encoding="utf-8-sig")))
+        canonical_net = prepare_canonical_net(paths)
+        paths["net"] = canonical_net
         output = paths["output"]
+        support = paths["support"]
         output.mkdir(parents=True, exist_ok=True)
-        spec_path = output / "validation_spec.json"
+        support.mkdir(parents=True, exist_ok=True)
+        spec_path = support / "validation_spec.json"
         spec_path.write_text(json.dumps(normalized["spec"], indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except (OSError, IntentError) as exc:
         print(json.dumps(_failure("intent", str(exc)), ensure_ascii=False, separators=(",", ":")))
         return 2
 
-    summary_path = output / "validation_summary.json"
+    summary_path = paths["support"] / "validation_summary.json"
     command = [
         str(paths["python"]), str(paths["root"] / "scripts" / "run_validation_suite.py"),
         "--net", str(paths["net"]), "--spec", str(spec_path), "--ltspice", str(paths["ltspice"]),
-        "--output", str(output), "--markdown", str(output / "validation_summary.md"),
+        "--output", str(paths["support"]), "--markdown", str(paths["support"] / "validation_summary.md"),
     ]
     try:
         completed = subprocess.run(command, cwd=str(paths["root"]), capture_output=True, text=True,
@@ -800,7 +875,7 @@ def main(argv: list[str] | None = None) -> int:
                           summary_path=summary_path)
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         return 2
-    result = _compact(summary, summary_path, str(normalized["mode"]))
+    result = _compact(summary, summary_path, str(normalized["mode"]), paths)
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0 if result["ok"] and completed.returncode == 0 else 1
 

@@ -21,7 +21,7 @@ For LTspice circuit design, simulation, modification, or validation, use this Sk
 
 ## Purpose and setup
 
-The `.net`/`.cir` is the source of truth. The Skill owns the engineering design; deterministic helpers own simulation proof and artifact bookkeeping. Do not read, reuse, import, or depend on the legacy `ltspice-circuit-simulator` Skill or LTSPICE-AI.
+The `.net`/`.cir` is the source of truth. The canonical delivered NET is the copy reported in the circuit's `<circuit>_files/` support directory; use that exact file for Weave and downstream validation. The Skill owns the engineering design; deterministic helpers own simulation proof and artifact bookkeeping. Do not read, reuse, import, or depend on the legacy `ltspice-circuit-simulator` Skill or LTSPICE-AI.
 
 The local configuration is `.ltspice-codex-config.json` beside this file. If it is missing or invalid, automatically run the available bootstrap/setup path and re-check it. When configuration is valid, do not inspect README files, bootstrap code, helper source, repository history, or troubleshooting notes before normal circuit work. Read those only for setup requests, infrastructure/helper failures, unexpected behavior, or implementation questions.
 
@@ -49,14 +49,14 @@ Normal Agent-facing output is compact: `PASS`/`FAIL`, failure class, failed requ
 
 ## Required workflow
 
-1. Create or update the exact final NET with explicit ground `0`, unique references, required analyses, and `.end`. Do not hand-author ASC coordinates.
+1. Create or update the final NET, then let the intent entrypoint promote it to the canonical `<circuit>_files/` NET. Use that reported canonical NET for all later steps. Include explicit ground `0`, unique references, required analyses, and `.end`. Do not hand-author ASC coordinates.
 2. Plan once. Prefer one analysis that proves several requirements; add an analysis or corner only when existing evidence cannot prove the requirement. Use mathematically justified worst-case endpoint reduction when clear; otherwise let the deterministic suite decide.
 3. Call `run_validation_intent.py` once for the complete plan. It must finish representation, schema, path, and default handling before LTspice is called.
 4. Read the compact result first, then the summary only as needed. Do not reopen proven RAW/LOG files or re-reason per corner.
 5. A failed gate is either `PLUMBING/INFRASTRUCTURE FAILURE` or `ENGINEERING FAILURE`. Fix mechanical issues deterministically; re-enter the Agent only for an engineering decision. After failure, diagnose only the affected requirement/evidence.
 6. Do not treat an old artifact as current evidence. Required runs must have fresh RAW and LOG files, and parser/fatal/simulation errors are failures even when LTspice exits with code 0.
-7. Only after the final NET passes required electrical validation, run Weave once on that exact NET. Accept the ASC only when round-trip verification is `MATCH`.
-8. In STRICT, run the generated ASC once with LTspice as the final smoke validation. Do not repeat the full engineering suite for this purpose.
+7. Only after the canonical final NET passes required electrical validation, run Weave once with that exact NET and write the ASC at the delivery-directory root. Write the verification result in the support directory. Accept the ASC only when round-trip verification is `MATCH`.
+8. In STRICT, run the generated root-level ASC once with LTspice as the final smoke validation, placing its RAW/LOG/report in the support directory. Do not repeat the full engineering suite for this purpose.
 
 ## Failure handling
 
@@ -64,16 +64,18 @@ Do not silently delete requirements, loosen targets/tolerances, omit explicit co
 
 ## Finalization and artifacts
 
-The artifact update policy is strict: ordinary parameter-only changes update the existing NET, replace the current RAW/LOG after re-simulation, and regenerate the ASC from that exact NET with Weave. NET and ASC must represent the same current circuit state. Do not make versioned copies unless history preservation is requested. In BATCH, generate ASC only for selected/final candidates.
+The artifact layout is strict: deliver only `<circuit>.asc` at the circuit-directory root and one `<circuit>_files/` support directory. The support directory contains the canonical NET, validation RAW/LOG, summaries, plots, Weave verification, ASC-smoke artifacts, and readable model dependencies. If a user manually runs the root-level ASC and LTspice creates a `.net`, `.raw`, or `.log` beside it, those are regenerable sidecars, never canonical evidence; do not reuse or report them as validation artifacts.
+
+The artifact update policy is strict: ordinary parameter-only changes update the existing canonical NET in the support directory, replace the current validation RAW/LOG, and regenerate the root-level ASC from that exact NET with Weave. NET and ASC must represent the same current circuit state. Do not make versioned copies unless history preservation is requested. In BATCH, generate ASC only for selected/final candidates.
 
 After every successful run, report concisely:
 
 - output directory
-- final `.net` path
-- final `.asc` path, if generated
-- final `.raw` path
-- final `.log` path
-- Weave verification result path, if generated
+- final canonical `.net` path in `<circuit>_files/`
+- final user-facing `.asc` path at the circuit-directory root, if generated
+- final validation `.raw` path in `<circuit>_files/`
+- final validation `.log` path in `<circuit>_files/`
+- Weave verification result path in `<circuit>_files/`, if generated
 
 Report requested measurements and gate results as well. `MATCH` proves connectivity equivalence; it does not replace LTspice or engineering validation. Once the user requirements and required gates pass, stop.
 
@@ -85,5 +87,5 @@ Use the configured Skill Python and paths. These are troubleshooting/reference c
 & '<configured Python>' '<skill>\scripts\run_ltspice.py' --input '<net-or-asc>' --ltspice '<LTspice.exe>'
 & '<configured Python>' '<skill>\scripts\run_validation_suite.py' --net '<net>' --spec '<canonical-spec>' --ltspice '<LTspice.exe>'
 & '<configured Python>' '<skill>\scripts\parse_raw.py' --raw '<raw>' --trace '<name>'
-& '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<exact-net>' --force
+& '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<circuit>_files\<circuit>.net' --asc '<circuit>.asc' --result '<circuit>_files\<circuit>.weave-verification.txt' --force
 ```

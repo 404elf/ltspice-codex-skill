@@ -187,8 +187,55 @@ class ValidationIntentTests(unittest.TestCase):
             paths = intent.resolve_paths("source/circuit.net", config, cwd=root)
         self.assertEqual(paths["net"], net.resolve())
         self.assertEqual(paths["output"], (root / "out" / "circuit").resolve())
+        self.assertEqual(paths["support"], (root / "out" / "circuit" / "circuit_files").resolve())
+        self.assertEqual(paths["canonical_net"], (root / "out" / "circuit" / "circuit_files" / "circuit.net").resolve())
+        self.assertEqual(paths["asc"], (root / "out" / "circuit" / "circuit.asc").resolve())
+        self.assertEqual(paths["weave_result"], (root / "out" / "circuit" / "circuit_files" / "circuit.weave-verification.txt").resolve())
         self.assertEqual(paths["ltspice"], (root / "LTspice.exe").resolve())
         self.assertEqual(paths["config"], config.resolve())
+
+    def test_entrypoint_promotes_net_and_routes_runtime_artifacts_to_support(self):
+        temp, root, net, config = self._environment()
+        intent_file = root / "intent.json"
+        intent_file.write_text('{"analyses":{"ac":".ac dec 10 10 10k"}}', encoding="utf-8")
+        completed = intent.subprocess.CompletedProcess([], 0, '{"status":"PASS","ok":true,"ltspice_runs":1}\n', "")
+        output = io.StringIO()
+        with temp, patch.object(intent.subprocess, "run", return_value=completed) as run, contextlib.redirect_stdout(output):
+            code = intent.main(["--net", str(net), "--intent", str(intent_file), "--config", str(config)])
+            self.assertEqual(code, 0)
+            delivery = root / "out" / "circuit"
+            support = delivery / "circuit_files"
+            canonical = support / "circuit.net"
+            self.assertTrue(canonical.is_file())
+            self.assertEqual(canonical.read_bytes(), net.read_bytes())
+            command = run.call_args.args[0]
+            self.assertIn(str(support.resolve()), command)
+            self.assertEqual(command[command.index("--net") + 1], str(canonical.resolve()))
+            self.assertEqual(command[command.index("--output") + 1], str(support.resolve()))
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["output_directory"], str(delivery.resolve()))
+            self.assertEqual(result["support_directory"], str(support.resolve()))
+            self.assertEqual(result["canonical_net"], str(canonical.resolve()))
+            self.assertEqual(result["expected_asc"], str((delivery / "circuit.asc").resolve()))
+
+    def test_readable_model_dependencies_are_staged_under_support(self):
+        temp, root, net, config = self._environment()
+        model = root / "source" / "device.lib"
+        model.write_text(".subckt DEVICE in out 0\nRmodel in out 1k\n.ends DEVICE\n", encoding="utf-8")
+        net.write_text(
+            ".include device.lib\n"
+            "V1 in 0 AC 1\n"
+            "X1 in out 0 DEVICE\n"
+            ".ac dec 10 10 10k\n.end\n",
+            encoding="utf-8",
+        )
+        paths = intent.resolve_paths(str(net), config)
+        with temp:
+            canonical = intent.prepare_canonical_net(paths)
+            support = root / "out" / "circuit" / "circuit_files"
+            self.assertEqual(canonical, (support / "circuit.net").resolve())
+            self.assertIn(".include deps/001_device.lib", canonical.read_text(encoding="utf-8"))
+            self.assertTrue((support / "deps" / "001_device.lib").is_file())
 
     def test_invalid_intent_fails_before_subprocess(self):
         temp, root, net, config = self._environment()

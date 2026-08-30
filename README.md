@@ -73,26 +73,37 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 - grouped tolerance 可以同时绑定多个 analysis；Skill 会把常见写法规范化为同一个 canonical tolerance plan。
 - LTspice 中的 binary/non-text 模型资产不一定能作为普通 `.lib`/`.include` 文件被 staging。遇到这种情况必须使用明确可读取的文本模型或修复依赖来源，不能把 staging 失败当成仿真成功，也不会改写 LTspice 安装目录。
 
-最终 NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；`STRICT` 还会运行 Weave 生成的 ASC。ASC 校验会在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`。
+最终 canonical NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；`STRICT` 还会运行 Weave 生成的 ASC。ASC 校验会在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
 
 ## 输出目录和文件
 
-默认输出根目录是 Skill 目录下的 `outputs/`，每个电路使用独立子目录：
+默认输出根目录由本机配置决定，每个电路使用独立交付目录。用户直接使用的顶层只保留最终 ASC 和一个支持目录：
 
 ```text
-<skill-directory>/outputs/<circuit-name>/
+<output-root>/<circuit-name>/
+├── <circuit-name>.asc
+└── <circuit-name>_files/
+    ├── <circuit-name>.net
+    ├── *.raw / *.log
+    ├── validation_summary.json / validation_summary.md
+    ├── simulation_evidence.json
+    ├── *weave-verification*.txt
+    ├── *.png
+    └── readable model dependencies
 ```
 
 成功运行结束时，Codex 必须报告以下路径：
 
-- `<circuit-name>.net`：提交给 LTspice 的最终 SPICE 网表，也是电路的 source of truth；
-- `<circuit-name>.asc`：按需由 Weave 从同一个最终 NET 生成；
-- `<circuit-name>.raw`：当前 NET 仿真生成的波形数据；
-- `<circuit-name>.log`：当前 NET 仿真的 LTspice 日志；
-- `*weave-verification*.txt`：Weave round-trip 结果，只有包含 `MATCH` 才算通过；
-- `validation_summary.json` / `validation_summary.md`：确定性验证摘要；
-- `*.png`：按请求生成的瞬态或 AC 图；
-- `*-asc.raw` / `*-asc.log`：STRICT 模式下生成的 ASC 附加 LTspice 校验结果。
+- `<circuit-name>_files/<circuit-name>.net`：canonical 最终 SPICE 网表，也是电路的 source of truth；
+- `<circuit-name>.asc`：按需由 Weave 从同一个 canonical NET 生成，位于交付目录顶层；
+- `<circuit-name>_files/*.raw`：当前 NET 仿真生成的波形数据；
+- `<circuit-name>_files/*.log`：当前 NET 仿真的 LTspice 日志；
+- `<circuit-name>_files/*weave-verification*.txt`：Weave round-trip 结果，只有包含 `MATCH` 才算通过；
+- `<circuit-name>_files/validation_summary.json` / `validation_summary.md`：确定性验证摘要；
+- `<circuit-name>_files/*.png`：按请求生成的瞬态或 AC 图；
+- `<circuit-name>_files/*-asc.raw` / `*-asc.log`：STRICT 模式下生成的 ASC 附加 LTspice 校验结果。
+
+用户手动打开顶层 ASC 并点击 Run 后，LTspice 可能在顶层生成同名 `.net`、`.raw`、`.log`。这些文件只是可再生 sidecar，不是 canonical NET，也不属于 canonical simulation evidence；验证和报告始终以 `<circuit-name>_files/` 中的文件为准。
 
 普通参数修改直接更新已有 NET，并替换对应 RAW/LOG，再从该 NET 替换 ASC；除非明确要求保留历史，否则不创建版本化目录。BATCH 只为选中的最终候选生成 ASC。
 
