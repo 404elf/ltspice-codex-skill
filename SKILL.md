@@ -16,7 +16,7 @@ For LTspice circuit design, simulation, modification, or validation, use this Sk
 - Read the compact PASS/FAIL result first.
 - On engineering failure, diagnose only the failed requirement.
 - After electrical PASS, run Weave once.
-- In STRICT, run one final generated-ASC LTspice smoke validation.
+- Every generated user-facing ASC must pass one final LTspice smoke validation.
 - Stop when proven.
 
 ## Purpose and setup
@@ -56,7 +56,7 @@ Normal Agent-facing output is compact: `PASS`/`FAIL`, failure class, failed requ
 5. A failed gate is either `PLUMBING/INFRASTRUCTURE FAILURE` or `ENGINEERING FAILURE`. Fix mechanical issues deterministically; re-enter the Agent only for an engineering decision. After failure, diagnose only the affected requirement/evidence.
 6. Do not treat an old artifact as current evidence. Required runs must have fresh RAW and LOG files, and parser/fatal/simulation errors are failures even when LTspice exits with code 0.
 7. Only after the canonical final NET passes required electrical validation, run Weave once with that exact NET and write the ASC at the delivery-directory root. Write the verification result in the support directory. Accept the ASC only when round-trip verification is `MATCH`.
-8. In STRICT, run the generated root-level ASC once with LTspice as the final smoke validation, placing its RAW/LOG/report in the support directory. Do not repeat the full engineering suite for this purpose.
+8. For every generated user-facing ASC, require the Weave finalizer's one LTspice smoke validation to pass. It places RAW/LOG/report in the support directory; do not repeat the full engineering suite for this purpose.
 
 ## Failure handling
 

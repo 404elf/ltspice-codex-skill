@@ -73,7 +73,7 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 - grouped tolerance 可以同时绑定多个 analysis；Skill 会把常见写法规范化为同一个 canonical tolerance plan。
 - LTspice 中的 binary/non-text 模型资产不一定能作为普通 `.lib`/`.include` 文件被 staging。遇到这种情况必须使用明确可读取的文本模型或修复依赖来源，不能把 staging 失败当成仿真成功，也不会改写 LTspice 安装目录。
 
-最终 canonical NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；`STRICT` 还会运行 Weave 生成的 ASC。ASC 校验会在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
+最终 canonical NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；每个交付给用户的 ASC 都会统一执行一次低成本 LTspice smoke。ASC 校验在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
 
 ## 输出目录和文件
 
@@ -101,7 +101,7 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 - `<circuit-name>_files/*weave-verification*.txt`：Weave round-trip 结果，只有包含 `MATCH` 才算通过；
 - `<circuit-name>_files/validation_summary.json` / `validation_summary.md`：确定性验证摘要；
 - `<circuit-name>_files/*.png`：按请求生成的瞬态或 AC 图；
-- `<circuit-name>_files/*-asc.raw` / `*-asc.log`：STRICT 模式下生成的 ASC 附加 LTspice 校验结果。
+- `<circuit-name>_files/*-asc.raw` / `*-asc.log`：最终用户 ASC 的附加 LTspice smoke 结果。
 
 用户手动打开顶层 ASC 并点击 Run 后，LTspice 可能在顶层生成同名 `.net`、`.raw`、`.log`。这些文件只是可再生 sidecar，不是 canonical NET，也不属于 canonical simulation evidence；验证和报告始终以 `<circuit-name>_files/` 中的文件为准。
 
@@ -115,7 +115,7 @@ validation suite 会先静态检查 validation spec，再执行 LTspice。成功
 
 - LTspice 退出码为 0 不能单独证明仿真成功；必须有新 RAW、新 LOG，且 LOG 无 parser/simulation fatal error；
 - Weave `MATCH` 只证明原理图连通性与 NET 等价，不代表电气指标自动正确；
-- `STRICT` 的成功条件是：最终 NET 仿真通过、RAW/LOG 校验通过、Weave 返回 `MATCH`、生成的 ASC 也通过 LTspice；
+- 任何模式只要生成用户 ASC，成功条件都是：最终 NET 仿真通过、RAW/LOG 校验通过、Weave 返回 `MATCH`、生成的 ASC 也通过 LTspice smoke；
 - Skill 不手工猜测 ASC 坐标，NET-to-ASC 转换始终由 Weave 完成。
 
 ## 许可证

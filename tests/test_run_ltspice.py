@@ -4,11 +4,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import run_ltspice as runner  # noqa: E402
 from run_ltspice import build_command, stage_asc_with_dependencies  # noqa: E402
 from validate_log import find_errors  # noqa: E402
 
@@ -51,6 +53,36 @@ class LTspiceCommandTests(unittest.TestCase):
             staged = stage_asc_with_dependencies(asc, root / "stage")
             self.assertIn("!.include models/op.lib", staged.read_text(encoding="utf-8"))
             self.assertTrue((staged.parent / "models" / "op.lib").is_file())
+
+    def test_asc_smoke_artifacts_can_be_routed_to_support_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            support = root / "circuit_files"
+            asc = root / "circuit.asc"
+            asc.write_text("Version 4\n", encoding="utf-8")
+            executable = root / "LTspice.exe"
+            executable.write_bytes(b"stub")
+
+            def fake_run(command, **_kwargs):
+                target = Path(command[-1])
+                if "-netlist" in command:
+                    target.with_suffix(".net").write_text("V1 in 0 1\n.op\n.end\n", encoding="utf-8")
+                else:
+                    target.with_suffix(".raw").write_bytes(b"raw")
+                    target.with_suffix(".log").write_text("Simulation successful\n", encoding="utf-8")
+                return runner.subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch.object(runner.subprocess, "run", side_effect=fake_run):
+                result = runner.run_simulation(
+                    asc,
+                    executable,
+                    output_dir=support,
+                    artifact_stem="circuit-asc",
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(Path(result["raw"]).parent.resolve(), support.resolve())
+            self.assertEqual(Path(result["log"]).parent.resolve(), support.resolve())
+            self.assertFalse((root / "circuit-asc.raw").exists())
 
 
 if __name__ == "__main__":

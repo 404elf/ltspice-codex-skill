@@ -47,6 +47,8 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
             weave_dir = root / "weave"
             weave_dir.mkdir()
             (weave_dir / "weave.js").write_text("// test stub\n", encoding="utf-8")
+            ltspice = root / "LTspice.exe"
+            ltspice.write_bytes(b"stub")
             asc = root / "filter.asc"
             result = support / "filter.weave-verification.txt"
 
@@ -56,14 +58,58 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
                     return weave.subprocess.CompletedProcess(command, 0, "converted\n", "")
                 return weave.subprocess.CompletedProcess(command, 0, "MATCH\n", "")
 
-            with patch.object(weave, "run", side_effect=fake_run):
+            smoke = {
+                "ok": True, "input": str(asc), "raw": str(support / "filter-asc.raw"),
+                "log": str(support / "filter-asc.log"), "errors": [],
+            }
+            with patch.object(weave, "run", side_effect=fake_run), patch.object(weave, "run_simulation", return_value=smoke) as smoke_runner:
                 code = weave.main([
                     "--net", str(net), "--weave-dir", str(weave_dir), "--node", sys.executable,
-                    "--asc", str(asc), "--result", str(result), "--force",
+                    "--ltspice", str(ltspice), "--asc", str(asc), "--result", str(result), "--force",
                 ])
             self.assertEqual(code, 0)
             self.assertTrue(asc.is_file())
-            self.assertIn("VERDICT=MATCH", result.read_text(encoding="utf-8"))
+            text = result.read_text(encoding="utf-8")
+            self.assertIn("VERDICT=MATCH", text)
+            self.assertIn("ASC_SMOKE=PASS", text)
+            call = smoke_runner.call_args
+            self.assertEqual(call.kwargs["output_dir"].resolve(), support.resolve())
+
+    def test_smoke_failure_rejects_connectivity_match(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            support = root / "filter_files"
+            support.mkdir()
+            net = support / "filter.net"
+            net.write_text("V1 in 0 1\nR1 in out 1k\n.end\n", encoding="utf-8")
+            weave_dir = root / "weave"
+            weave_dir.mkdir()
+            (weave_dir / "weave.js").write_text("// test stub\n", encoding="utf-8")
+            ltspice = root / "LTspice.exe"
+            ltspice.write_bytes(b"stub")
+            asc = root / "filter.asc"
+            result = support / "filter.weave-verification.txt"
+
+            def fake_run(command, _cwd):
+                if "convert" in command:
+                    asc.write_bytes(b"Version 4\n")
+                    return weave.subprocess.CompletedProcess(command, 0, "converted\n", "")
+                return weave.subprocess.CompletedProcess(command, 0, "MATCH\n", "")
+
+            smoke = {
+                "ok": False, "raw": str(support / "filter-asc.raw"),
+                "log": str(support / "filter-asc.log"), "errors": ["No such node"],
+            }
+            with patch.object(weave, "run", side_effect=fake_run), patch.object(weave, "run_simulation", return_value=smoke):
+                code = weave.main([
+                    "--net", str(net), "--weave-dir", str(weave_dir), "--node", sys.executable,
+                    "--ltspice", str(ltspice), "--asc", str(asc), "--result", str(result), "--force",
+                ])
+            self.assertEqual(code, 1)
+            text = result.read_text(encoding="utf-8")
+            self.assertIn("WEAVE_VERDICT=MATCH", text)
+            self.assertIn("ASC_SMOKE=FAIL", text)
+            self.assertIn("VERDICT=ASC_SMOKE_FAILED", text)
 
 
 if __name__ == "__main__":

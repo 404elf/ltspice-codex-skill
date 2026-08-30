@@ -109,6 +109,7 @@ def run_simulation(
     report_path: Path | None = None,
     *,
     artifact_stem: str | None = None,
+    output_dir: Path | None = None,
     ascii_output: bool = False,
     timeout_seconds: float | None = None,
 ) -> dict[str, object]:
@@ -125,16 +126,17 @@ def run_simulation(
     if not executable.is_file():
         return {"ok": False, "input": str(input_path), "errors": ["LTspice executable missing"]}
 
-    output_dir = input_path.parent
+    artifact_dir = output_dir.resolve() if output_dir is not None else input_path.parent
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     # Stage ASC validation in a temporary directory. LTspice first netlists the
     # staged ASC, then runs that generated NET, so the source NET is untouched.
     # Its RAW/LOG are copied back under a distinct stem.
     is_asc = input_path.suffix.lower() == ".asc"
     stem = artifact_stem or (f"{input_path.stem}-asc" if is_asc else input_path.stem)
-    raw_path = output_dir / f"{stem}.raw"
-    log_path = output_dir / f"{stem}.log"
+    raw_path = artifact_dir / f"{stem}.raw"
+    log_path = artifact_dir / f"{stem}.log"
     report_path = (report_path.resolve() if report_path else
-                   output_dir / f"{stem}.run-report.json")
+                   artifact_dir / f"{stem}.run-report.json")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     stale_raw = archive(raw_path, stamp)
     stale_log = archive(log_path, stamp)
@@ -142,16 +144,16 @@ def run_simulation(
     started_perf_ns = time.perf_counter_ns()
     stage_dir: Path | None = None
     run_input = input_path
-    run_dir = output_dir
-    source_raw_path = raw_path
-    source_log_path = log_path
+    run_dir = input_path.parent
+    source_raw_path = input_path.with_suffix(".raw")
+    source_log_path = input_path.with_suffix(".log")
     pre_run_errors: list[str] = []
     netlist_command: list[str] | None = None
     netlist_returncode: int | None = None
     netlist_stdout = ""
     netlist_stderr = ""
     if is_asc:
-        stage_dir = Path(tempfile.mkdtemp(prefix=f".{input_path.stem}-ltspice-", dir=str(output_dir)))
+        stage_dir = Path(tempfile.mkdtemp(prefix=f".{input_path.stem}-ltspice-", dir=str(input_path.parent)))
         staged_asc = stage_asc_with_dependencies(input_path, stage_dir)
         netlist_command = build_netlist_command(executable, staged_asc)
         try:
@@ -271,13 +273,14 @@ def main() -> int:
     parser.add_argument("--ltspice", required=True, type=Path)
     parser.add_argument("--report", type=Path, help="Optional JSON report path")
     parser.add_argument("--artifact-stem", help="Optional output RAW/LOG stem")
+    parser.add_argument("--output-dir", type=Path, help="Optional RAW/LOG/report output directory")
     parser.add_argument("--ascii", action="store_true", help="Request ASCII RAW output instead of the default binary RAW")
     parser.add_argument("--timeout-seconds", type=float, help="Stop a long-running LTspice job after this many seconds")
     args = parser.parse_args()
 
     result = run_simulation(
         args.input, args.ltspice, args.report,
-        artifact_stem=args.artifact_stem, ascii_output=args.ascii,
+        artifact_stem=args.artifact_stem, output_dir=args.output_dir, ascii_output=args.ascii,
         timeout_seconds=args.timeout_seconds,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))

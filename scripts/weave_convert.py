@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from run_ltspice import run_simulation
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_NAME = ".ltspice-codex-config.json"
@@ -151,11 +153,33 @@ def resolve_tools(
     return weave_dir, _resolve_program(node_value, config_file.parent)
 
 
+def resolve_ltspice(ltspice: Path | None, config_path: Path | None = None) -> Path:
+    """Resolve the LTspice executable used for the mandatory final ASC smoke."""
+
+    if ltspice is not None:
+        resolved = ltspice.resolve()
+    else:
+        config_file = (config_path or ROOT / CONFIG_NAME).resolve()
+        if not config_file.is_file():
+            raise ValueError(f"configuration missing: {config_file}")
+        try:
+            loaded = json.loads(config_file.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"configuration invalid: {config_file}") from exc
+        if not isinstance(loaded, dict) or not loaded.get("ltspice"):
+            raise ValueError("configuration missing ltspice")
+        resolved = _resolve_path(loaded["ltspice"], config_file.parent)
+    if not resolved.is_file():
+        raise ValueError(f"LTspice executable missing: {resolved}")
+    return resolved
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Weave-convert and verify an exact netlist.")
     parser.add_argument("--net", required=True, type=Path)
     parser.add_argument("--weave-dir", type=Path, help="Override the configured Weave CLI directory")
     parser.add_argument("--node", help="Override the configured Node executable")
+    parser.add_argument("--ltspice", type=Path, help="Override the configured LTspice executable")
     parser.add_argument("--config", type=Path, help="Optional local Skill configuration")
     parser.add_argument("--asc", type=Path)
     parser.add_argument("--result", type=Path)
@@ -165,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     net = args.net.resolve()
     try:
         weave_dir, node = resolve_tools(args.weave_dir, args.node, args.config)
+        ltspice = resolve_ltspice(args.ltspice, args.config)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -184,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
     before = sha256(net)
     conversion = run([node, str(weave_js), "convert", str(net), str(asc)], weave_dir)
     verification = None
+    smoke_result: dict[str, object] | None = None
+    smoke_verdict = "NOT_RUN"
+    weave_verdict = "ERROR"
     verdict = "ERROR"
     dependency_paths_rewritten = False
     after = sha256(net)
@@ -196,7 +224,19 @@ def main(argv: list[str] | None = None) -> int:
         match = verification.returncode == 0 and re.search(
             r"(?im)^\s*MATCH(?:\s|$)", verification.stdout or ""
         )
-        verdict = "MATCH" if match else "MISMATCH"
+        weave_verdict = "MATCH" if match else "MISMATCH"
+        if match:
+            smoke_result = run_simulation(
+                asc,
+                ltspice,
+                result_path.parent / f"{net.stem}-asc.run-report.json",
+                artifact_stem=f"{net.stem}-asc",
+                output_dir=result_path.parent,
+            )
+            smoke_verdict = "PASS" if smoke_result.get("ok") else "FAIL"
+            verdict = "MATCH" if smoke_verdict == "PASS" else "ASC_SMOKE_FAILED"
+        else:
+            verdict = "MISMATCH"
     else:
         verdict = "NET_CHANGED_OR_CONVERSION_FAILED"
 
@@ -206,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         f"OUTPUT_ASC={asc}",
         f"NET_SHA256_BEFORE={before}",
         f"NET_SHA256_AFTER={after}",
+        f"WEAVE_VERDICT={weave_verdict}",
+        f"ASC_SMOKE={smoke_verdict}",
         f"VERDICT={verdict}",
         f"DEPENDENCY_PATHS_REWRITTEN={str(dependency_paths_rewritten).lower()}",
         f"CONVERSION_EXIT_CODE={conversion.returncode}",
@@ -218,8 +260,17 @@ def main(argv: list[str] | None = None) -> int:
             "VERIFICATION_STDOUT_BEGIN", verification.stdout.rstrip(), "VERIFICATION_STDOUT_END",
             "VERIFICATION_STDERR_BEGIN", verification.stderr.rstrip(), "VERIFICATION_STDERR_END",
         ])
+    if smoke_result is not None:
+        lines.extend([
+            f"ASC_SMOKE_REPORT={smoke_result.get('input') and result_path.parent / f'{net.stem}-asc.run-report.json'}",
+            f"ASC_SMOKE_RAW={smoke_result.get('raw')}",
+            f"ASC_SMOKE_LOG={smoke_result.get('log')}",
+            "ASC_SMOKE_ERRORS=" + json.dumps(smoke_result.get("errors", []), ensure_ascii=False),
+        ])
     result_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"VERDICT={verdict}")
+    print(f"WEAVE_VERDICT={weave_verdict}")
+    print(f"ASC_SMOKE={smoke_verdict}")
     print(f"ASC={asc}")
     print(f"RESULT={result_path}")
     return 0 if verdict == "MATCH" else 1
