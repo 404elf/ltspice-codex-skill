@@ -35,6 +35,8 @@ The installed configuration resolves Python, LTspice, the output root, and Weave
 
 The Agent decides topology, component values, engineering requirements, relevant analyses, metrics, and genuine design diagnosis. Code handles normalization, paths, schema checks, simulation, RAW/LOG parsing, metric arithmetic, corner expansion, dependency/evidence bookkeeping, and summaries.
 
+For a user-facing voltage output with no specified load, add a high-value `RLOAD` to ground as the default high-impedance load/DC reference. Do not add `RLOAD` to internal, storage, sensing, intentionally floating, current-output, or topology-defining nodes unless it is the actual requested load. If a load affects the design target, name it explicitly and treat it as part of the circuit.
+
 Use the thin deterministic entrypoint:
 
 ```text
@@ -91,3 +93,4 @@ Use the configured Skill Python and paths. These are troubleshooting/reference c
 & '<configured Python>' '<skill>\scripts\parse_raw.py' --raw '<raw>' --trace '<name>'
 & '<configured Python>' '<skill>\scripts\weave_convert.py' --net '<circuit>_files\<circuit>.net' --asc '<circuit>.asc' --result '<circuit>_files\<circuit>.weave-verification.txt' --force
 ```
+
