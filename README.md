@@ -73,6 +73,8 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 - grouped tolerance 可以同时绑定多个 analysis；Skill 会把常见写法规范化为同一个 canonical tolerance plan。
 - LTspice 中的 binary/non-text 模型资产不一定能作为普通 `.lib`/`.include` 文件被 staging。遇到这种情况必须使用明确可读取的文本模型或修复依赖来源，不能把 staging 失败当成仿真成功，也不会改写 LTspice 安装目录。
 
+默认会从 canonical NET 中移除 `.save` directive，因此最终 ASC 不包含 `.save`。只有用户明确要求保存指定波形或限制 RAW 变量时，才在 intent 中设置 `preserve_save: true` 保留它。
+
 最终 canonical NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；每个交付给用户的 ASC 都会统一执行一次低成本 LTspice smoke。ASC 校验在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
 
 ## 输出目录和文件

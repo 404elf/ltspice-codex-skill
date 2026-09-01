@@ -47,6 +47,8 @@ The entrypoint is intentionally thin: intent normalization and validation → co
 
 Normal Agent-facing output is compact: `PASS`/`FAIL`, failure class, failed requirement, summary path, LTspice call count, and evidence-reuse count. Full details remain in the existing summary artifact.
 
+Canonical NET preparation removes `.save` directives by default, so the final ASC does not contain them. If the user explicitly requests saved traces or restricted RAW variables, set `preserve_save: true` in the intent; preserve the directive and validate that exact state.
+
 ## Required workflow
 
 1. Create or update the final NET, then let the intent entrypoint promote it to the canonical `<circuit>_files/` NET. Use that reported canonical NET for all later steps. Include explicit ground `0`, unique references, required analyses, and `.end`. Do not hand-author ASC coordinates.

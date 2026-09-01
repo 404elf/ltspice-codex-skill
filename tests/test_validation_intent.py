@@ -33,6 +33,26 @@ class ValidationIntentTests(unittest.TestCase):
         }), encoding="utf-8")
         return temp, root, net, config
 
+    def test_save_directive_is_removed_by_default_and_preserved_when_explicit(self):
+        temp, root, net, config = self._environment()
+        net.write_text(
+            "V1 in 0 AC 1\n"
+            ".save V(in) V(out)\n"
+            "R1 in out 1k\n"
+            ".ac dec 10 10 10k\n.end\n",
+            encoding="utf-8",
+        )
+        with temp:
+            canonical = intent.prepare_canonical_net(intent.resolve_paths(net, config))
+            self.assertNotIn(".save", canonical.read_text(encoding="utf-8").lower())
+
+            preserved = root / "source" / "preserved.net"
+            preserved.write_text(net.read_text(encoding="utf-8"), encoding="utf-8")
+            preserved_canonical = intent.prepare_canonical_net(
+                intent.resolve_paths(preserved, config), preserve_save=True
+            )
+            self.assertIn(".save V(in) V(out)", preserved_canonical.read_text(encoding="utf-8"))
+
     def test_minimal_intent_normalizes_to_canonical_spec(self):
         normalized = intent.normalize_intent({
             "mode": "standard",

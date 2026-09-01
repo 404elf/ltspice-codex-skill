@@ -41,10 +41,35 @@ MEASURE_ALIASES = {
 }
 AXIS_METRICS = {"value_at", "value_at_x", "gain_at", "gain_at_frequency", "fc_3db", "cutoff_3db"}
 REFERENCE_METRICS = {"gain_at", "gain_at_frequency"}
+SAVE_DIRECTIVE_RE = re.compile(r"^\s*\.save(?:\s|$)", re.IGNORECASE)
 
 
 class IntentError(ValueError):
     """A deterministic, user-actionable intent error."""
+
+
+def strip_save_directives(text: str) -> str:
+    """Remove .save directives unless the caller explicitly preserves them."""
+
+    lines = text.splitlines()
+    cleaned: list[str] = []
+    skipping_continuation = False
+    changed = False
+    for line in lines:
+        stripped = line.lstrip()
+        if SAVE_DIRECTIVE_RE.match(line):
+            skipping_continuation = True
+            changed = True
+            continue
+        if skipping_continuation and stripped.startswith("+"):
+            changed = True
+            continue
+        skipping_continuation = False
+        cleaned.append(line)
+    if not changed:
+        return text
+    suffix = "\n" if text.endswith(("\n", "\r")) else ""
+    return "\n".join(cleaned) + suffix
 
 
 def _text(value: object, label: str) -> str:
@@ -237,22 +262,27 @@ def resolve_paths(net_value: object, config_path: Path | None = None, *, cwd: Pa
     }
 
 
-def prepare_canonical_net(paths: dict[str, Path]) -> Path:
+def prepare_canonical_net(paths: dict[str, Path], *, preserve_save: bool = False) -> Path:
     """Copy/promote the final NET into the delivery support directory.
 
     Readable model dependencies are staged beside the canonical NET so the
     support directory is self-contained for derived analyses and ASC smoke
-    validation.  The caller's input NET is never deleted or overwritten.
+    validation.  By default, validation-only ``.save`` directives are removed
+    from the canonical/user-facing NET; explicit ``preserve_save=True`` keeps
+    them.  The caller's input NET is never deleted or overwritten.
     """
 
     source = paths["input_net"].resolve()
     support = paths["support"].resolve()
     canonical = paths["canonical_net"].resolve()
     support.mkdir(parents=True, exist_ok=True)
+    source_text = source.read_text(encoding="utf-8", errors="replace")
+    canonical_text = source_text if preserve_save else strip_save_directives(source_text)
     if source == canonical:
+        if canonical_text != source_text:
+            canonical.write_text(canonical_text, encoding="utf-8")
         return canonical
 
-    source_text = source.read_text(encoding="utf-8", errors="replace")
     dependencies = dependency_manifest(source, source_text)
     stageable_dependencies = any(
         item.get("exists") and item.get("content_verified")
@@ -261,13 +291,16 @@ def prepare_canonical_net(paths: dict[str, Path]) -> Path:
     )
     if dependencies.get("ok") and stageable_dependencies:
         try:
-            staged = stage_net_with_dependencies(source, source_text, support, dependencies)
+            staged = stage_net_with_dependencies(source, canonical_text, support, dependencies)
             return staged.resolve()
         except (OSError, ValueError):
             pass
     # Keep the exact source available to the suite so its dry-run can report
     # missing/unusable dependencies deterministically.
-    shutil.copy2(source, canonical)
+    if canonical_text == source_text:
+        shutil.copy2(source, canonical)
+    else:
+        canonical.write_text(canonical_text, encoding="utf-8")
     return canonical
 
 
@@ -679,10 +712,14 @@ def normalize_intent(intent: object) -> dict[str, object]:
         "tolerances": ("tolerance", "tolerance_groups", "corner_tolerances", "parameter_tolerances"),
         "required_nets": ("required_net", "required_nodes", "required_nodes_list"),
         "model_policy": ("device_policy", "model_requirement"),
+        "preserve_save": ("keep_save", "retain_save", "preserve_save_directive"),
     }
     for canonical, aliases in top_level_aliases.items():
         _move_aliases(intent, canonical, *aliases)
-    allowed = {"mode", "analyses", "requirements", "tolerances", "required_nets", "model_policy"}
+    allowed = {
+        "mode", "analyses", "requirements", "tolerances", "required_nets",
+        "model_policy", "preserve_save",
+    }
     unknown = sorted(set(intent) - allowed)
     if unknown:
         raise IntentError(f"unsupported intent fields: {', '.join(unknown)}")
@@ -729,7 +766,10 @@ def normalize_intent(intent: object) -> dict[str, object]:
     model_policy = _model_policy(intent.get("model_policy"))
     if model_policy:
         spec["model_policy"] = model_policy
-    return {"mode": mode, "spec": spec}
+    preserve_save = intent.get("preserve_save", False)
+    if not isinstance(preserve_save, bool):
+        raise IntentError("preserve_save must be boolean")
+    return {"mode": mode, "spec": spec, "preserve_save": preserve_save}
 
 
 def _failure(stage: str, error: str, *, summary_path: Path | None = None) -> dict[str, object]:
@@ -843,7 +883,9 @@ def main(argv: list[str] | None = None) -> int:
         if not intent_path.is_file():
             raise IntentError(f"INTENT_NOT_FOUND: {intent_path}")
         normalized = normalize_intent(parse_intent_text(intent_path.read_text(encoding="utf-8-sig")))
-        canonical_net = prepare_canonical_net(paths)
+        canonical_net = prepare_canonical_net(
+            paths, preserve_save=bool(normalized.get("preserve_save", False))
+        )
         paths["net"] = canonical_net
         output = paths["output"]
         support = paths["support"]
