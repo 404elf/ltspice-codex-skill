@@ -312,6 +312,9 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
             errors.append(f"metric {metric_name} must be an object")
             continue
         kind = str(raw_metric.get("kind", "abs_max")).lower()
+        scope = str(raw_metric.get("scope", "all")).lower()
+        if scope not in {"all", "nominal", "corners"}:
+            errors.append(f"metric {metric_name}: scope must be all, nominal, or corners")
         if kind not in SCALAR_METRICS and kind not in AXIS_METRICS:
             errors.append(f"metric {metric_name}: unsupported kind {kind}")
         if not str(raw_metric.get("trace", "")).strip():
@@ -423,6 +426,8 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
             if group_strategy == "monotonic" and not group.get("monotonic"):
                 errors.append(f"tolerance_groups[{index}] monotonic strategy requires declarations")
 
+    planned_corners: list[dict[str, object]] = []
+    planned_groups: list[dict[str, object]] = []
     if raw_corners is not None and not errors:
         try:
             planned_corners = expand_corners(
@@ -451,6 +456,24 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
                 replace_parameters(source_text, params_for_corner)
         except (TypeError, ValueError) as exc:
             errors.append(f"tolerance corner plan: {exc}")
+
+    if not errors:
+        jobs = coalesce_analyses(analyses, source_directives)
+        primary = primary_analysis(jobs, source_directives)
+        covered_corner_metrics: set[str] = set()
+        for corner in planned_corners + planned_groups:
+            target = str(corner.get("analysis") or "").lower()
+            job = next((item for item in jobs if target in {
+                str(item["name"]).lower(), str(item["kind"]).lower(),
+                *(str(alias).lower() for alias in item.get("aliases", [])),
+            }), primary) if target else primary
+            covered_corner_metrics.update(metric_specs_for_job(
+                raw_metrics, f"{corner['name']}__{job['name']}", str(job["kind"]),
+                aliases=[str(alias) for alias in job.get("aliases", [])], corner=True,
+            ))
+        for metric_name, raw_metric in raw_metrics.items():
+            if str(raw_metric.get("scope", "all")).lower() == "corners" and metric_name not in covered_corner_metrics:
+                errors.append(f"metric {metric_name}: scope=corners has no matching corner jobs")
 
     hints = spec.get("convergence_hints", [])
     if hints is not None and not isinstance(hints, list):
@@ -501,6 +524,16 @@ def coalesce_analyses(analyses: list[dict[str, object]], source_directives: list
             aliases.append(str(item["name"]))
             existing["aliases"] = aliases
     return order
+
+
+def primary_analysis(
+    analyses: list[dict[str, object]], source_directives: list[tuple[str, str]],
+) -> dict[str, object]:
+    """Use the source's sole analysis kind as primary when available."""
+
+    if len(source_directives) == 1:
+        return next((item for item in analyses if str(item["kind"]).lower() == source_directives[0][0]), analyses[0])
+    return analyses[0]
 
 
 def replace_parameters(text: str, params: dict[str, object]) -> str:
@@ -801,6 +834,7 @@ def metric_specs_for_job(
     job_name: str,
     job_kind: str,
     aliases: list[str] | None = None,
+    *, corner: bool = False,
 ) -> dict[str, dict[str, object]]:
     if not isinstance(specs, dict):
         return {}
@@ -809,6 +843,9 @@ def metric_specs_for_job(
     job_aliases.update(str(item).lower() for item in (aliases or []))
     for name, raw in specs.items():
         if not isinstance(raw, dict):
+            continue
+        scope = str(raw.get("scope", "all")).lower()
+        if (scope == "nominal" and corner) or (scope == "corners" and not corner):
             continue
         target = raw.get("analysis")
         target_name = str(target).lower() if target is not None else None
@@ -1075,11 +1112,7 @@ def main() -> int:
         if not analyses:
             analyses = [{"name": source_directives[0][0], "kind": source_directives[0][0]}]
         analyses = coalesce_analyses(analyses, source_directives)
-        source_kinds = [kind for kind, _ in source_directives]
-        exact_kind = source_kinds[0] if len(source_kinds) == 1 else None
-        primary = analyses[0]
-        if exact_kind and any(str(item["kind"]).lower() == exact_kind for item in analyses):
-            primary = next(item for item in analyses if str(item["kind"]).lower() == exact_kind)
+        primary = primary_analysis(analyses, source_directives)
 
         if bool(spec.get("preflight", False)):
             state_path = output / ".validation-state.json"
@@ -1281,6 +1314,7 @@ def main() -> int:
                 metric_specs = metric_specs_for_job(
                     spec.get("metrics", {}), job_name, kind,
                     aliases=[str(item) for item in analysis.get("aliases", [])],
+                    corner=corner is not None,
                 )
                 metric_results: dict[str, object] = {}
                 metric_failures: list[str] = []

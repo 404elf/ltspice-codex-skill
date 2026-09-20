@@ -43,6 +43,7 @@ MEASURE_ALIASES = {
 AXIS_METRICS = {"value_at", "value_at_x", "gain_at", "gain_at_frequency", "fc_3db", "cutoff_3db"}
 REFERENCE_METRICS = {"gain_at", "gain_at_frequency"}
 SAVE_DIRECTIVE_RE = re.compile(r"^\s*\.save(?:\s|$)", re.IGNORECASE)
+ANALYSIS_DIRECTIVE_RE = re.compile(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", re.IGNORECASE)
 
 
 class IntentError(ValueError):
@@ -268,14 +269,58 @@ def resolve_paths(net_value: object, config_path: Path | None = None, *, cwd: Pa
     }
 
 
-def prepare_canonical_net(paths: dict[str, Path], *, preserve_save: bool = False) -> Path:
+def sync_delivery_analyses(text: str, analyses: list[dict[str, object]]) -> str:
+    """Apply an explicit, unambiguous update to an existing analysis kind.
+
+    Supplemental kinds and alternative sweeps stay validation-only. Never
+    choose among several analyses of one kind or modify circuit elements.
+    """
+
+    requested: dict[str, list[dict[str, object]]] = {}
+    for analysis in analyses:
+        requested.setdefault(str(analysis["kind"]).lower(), []).append(analysis)
+    lines = text.splitlines()
+    source_counts: dict[str, int] = {}
+    for line in lines:
+        match = ANALYSIS_DIRECTIVE_RE.match(line)
+        if match:
+            kind = match.group(1).lower()
+            source_counts[kind] = source_counts.get(kind, 0) + 1
+    replacements: dict[str, str] = {}
+    for kind, choices in requested.items():
+        directives = {str(item.get("directive") or "").strip() for item in choices}
+        if source_counts.get(kind) == 1 and len(directives) == 1 and "" not in directives:
+            replacements[kind] = next(iter(directives))
+    updated: list[str] = []
+    skip_continuation = False
+    for line in lines:
+        if skip_continuation and line.lstrip().startswith("+"):
+            continue
+        skip_continuation = False
+        match = ANALYSIS_DIRECTIVE_RE.match(line)
+        if match and match.group(1).lower() in replacements:
+            updated.append(replacements[match.group(1).lower()])
+            skip_continuation = True
+        else:
+            updated.append(line)
+    if updated == lines:
+        return text
+    suffix = "\n" if text.endswith(("\n", "\r")) else ""
+    return "\n".join(updated) + suffix
+
+
+def prepare_canonical_net(
+    paths: dict[str, Path], *, preserve_save: bool = False,
+    analyses: list[dict[str, object]] | None = None,
+) -> Path:
     """Copy/promote the final NET into the delivery support directory.
 
     Readable model dependencies are staged beside the canonical NET so the
     support directory is self-contained for derived analyses and ASC smoke
     validation.  By default, validation-only ``.save`` directives are removed
     from the canonical/user-facing NET; explicit ``preserve_save=True`` keeps
-    them.  The caller's input NET is never deleted or overwritten.
+    them. Explicit unambiguous analysis updates are applied to the delivered
+    NET before validation. An input outside the canonical path is unchanged.
     """
 
     source = paths["input_net"].resolve()
@@ -284,6 +329,7 @@ def prepare_canonical_net(paths: dict[str, Path], *, preserve_save: bool = False
     support.mkdir(parents=True, exist_ok=True)
     source_text = source.read_text(encoding="utf-8", errors="replace")
     canonical_text = source_text if preserve_save else strip_save_directives(source_text)
+    canonical_text = sync_delivery_analyses(canonical_text, analyses or [])
     if source == canonical:
         if canonical_text != source_text:
             canonical.write_text(canonical_text, encoding="utf-8")
@@ -397,7 +443,7 @@ REQUIREMENT_FIELDS = {
     "metric", "metric_kind", "metric_type", "node", "trace_name", "waveform", "output_trace",
     "reference_trace", "ref_trace", "analysis_name", "for_analysis", "at", "x", "frequency", "time",
     "x_value", "target", "expected", "min", "max", "response", "tolerance", "tol", "tolerance_pct",
-    "tolerance_percent",
+    "tolerance_percent", "scope",
 }
 
 
@@ -491,6 +537,11 @@ def _requirements(raw: object, analyses: list[dict[str, object]]) -> dict[str, d
         if known and selected_text.casefold() not in known:
             raise IntentError(f"requirements.{name}: unknown analysis {selected_text}")
         metric["analysis"] = selected_text
+        if "scope" in data:
+            scope = _text(data.pop("scope"), f"requirements.{name}.scope").lower()
+            if scope not in {"all", "nominal", "corners"}:
+                raise IntentError(f"requirements.{name}.scope must be all, nominal, or corners")
+            metric["scope"] = scope
         reference = _take(data, "reference", "ref")
         if reference is not None:
             metric["reference"] = _text(reference, f"requirements.{name}.reference")
@@ -890,7 +941,8 @@ def main(argv: list[str] | None = None) -> int:
             raise IntentError(f"INTENT_NOT_FOUND: {intent_path}")
         normalized = normalize_intent(parse_intent_text(intent_path.read_text(encoding="utf-8-sig")))
         canonical_net = prepare_canonical_net(
-            paths, preserve_save=bool(normalized.get("preserve_save", False))
+            paths, preserve_save=bool(normalized.get("preserve_save", False)),
+            analyses=normalized["spec"]["analyses"],
         )
         paths["net"] = canonical_net
         output = paths["output"]

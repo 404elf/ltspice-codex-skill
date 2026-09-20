@@ -110,6 +110,54 @@ class ValidationIntentTests(unittest.TestCase):
                     "tolerances": {"parameters": {"R": value}},
                 })
 
+    def test_requirement_scopes_preserve_separate_acceptance_limits(self):
+        normalized = intent.normalize_intent({
+            "analyses": {"ac": ".ac dec 200 10 100k"},
+            "requirements": [
+                {"name": "nominal_fc", "measure": "fc_3db", "signal": "V(out)",
+                 "scope": "nominal", "target": 2000, "tolerance": 3},
+                {"name": "corner_fc", "measure": "fc_3db", "signal": "V(out)",
+                 "scope": "corners", "target": 2000, "tolerance": 10},
+            ],
+            "tolerances": {"parameters": {"R": 1, "C": 5}},
+        })
+        metrics = normalized["spec"]["metrics"]
+        self.assertEqual(metrics["nominal_fc"]["scope"], "nominal")
+        self.assertEqual(metrics["nominal_fc"]["tolerance_percent"], 3)
+        self.assertEqual(metrics["corner_fc"]["scope"], "corners")
+        self.assertEqual(metrics["corner_fc"]["tolerance_percent"], 10)
+        for scope in ("nominals", "corner", None, True):
+            with self.subTest(scope=scope), self.assertRaises(intent.IntentError):
+                intent.normalize_intent({"analyses": {"op": ".op"}, "requirements": [
+                    {"measure": "final", "signal": "V(out)", "scope": scope},
+                ]})
+
+    def test_delivery_sync_preserves_circuit_and_unrequested_analysis(self):
+        source = "* circuit\nV1 in 0 AC 1\nR1 in out 1k\nC1 out 0 10n\n.ac dec 20 10 100\n.tran 0 1m\n.end\n"
+        updated = intent.sync_delivery_analyses(source, [
+            {"name": "ac", "kind": "ac", "directive": ".ac dec 200 10 1Meg"},
+        ])
+        self.assertEqual(updated, source.replace(".ac dec 20 10 100", ".ac dec 200 10 1Meg"))
+
+    def test_delivery_sync_does_not_guess_between_alternative_sweeps(self):
+        source = "V1 in 0 AC 1\n.ac dec 20 10 100\n.end\n"
+        choices = [
+            {"name": "wide", "kind": "ac", "directive": ".ac dec 200 10 1Meg"},
+            {"name": "detail", "kind": "ac", "directive": ".ac lin 100 900 1100"},
+        ]
+        self.assertEqual(intent.sync_delivery_analyses(source, choices), source)
+        self.assertEqual(intent.sync_delivery_analyses(source, choices[:1] + [{"name":"original", "kind":"ac"}]), source)
+        multiple_source = source.replace(".end", ".ac lin 20 200 300\n.end")
+        self.assertEqual(intent.sync_delivery_analyses(multiple_source, choices[:1]), multiple_source)
+        self.assertEqual(intent.sync_delivery_analyses(source, [{"name":"bias", "kind":"op", "directive":".op"}]), source)
+
+    def test_delivery_sync_replaces_analysis_continuations(self):
+        source = "V1 in 0 AC 1\n.ac dec 20\n+ 10 100\n.end\n"
+        updated = intent.sync_delivery_analyses(source, [
+            {"name":"ac", "kind":"ac", "directive":".ac dec 200 10 1Meg"},
+        ])
+        self.assertEqual(updated, "V1 in 0 AC 1\n.ac dec 200 10 1Meg\n.end\n")
+
     def test_nested_requirements_and_tolerances_route_by_analysis(self):
         normalized = intent.normalize_intent({
             "analyses": {
@@ -245,7 +293,9 @@ class ValidationIntentTests(unittest.TestCase):
             support = delivery / "circuit_files"
             canonical = support / "circuit.net"
             self.assertTrue(canonical.is_file())
-            self.assertEqual(canonical.read_bytes(), net.read_bytes())
+            self.assertIn(".ac dec 100 1 100k", net.read_text(encoding="utf-8"))
+            self.assertEqual(canonical.read_text(encoding="utf-8"), net.read_text(encoding="utf-8").replace(
+                ".ac dec 100 1 100k", ".ac dec 10 10 10k"))
             command = run.call_args.args[0]
             self.assertIn(str(support.resolve()), command)
             self.assertEqual(command[command.index("--net") + 1], str(canonical.resolve()))

@@ -21,7 +21,7 @@ The canonical `.net`/`.cir` reported by the runner is the circuit source of trut
 ## Validate
 
 1. Create or update the NET with explicit ground `0`, unique references, usable model dependencies, a runnable analysis directive, and `.end`. Before replacing existing user files, verify a rollback copy outside the delivery directory. Use the same delivery paths for ordinary updates.
-2. Read [validation intent](references/validation-intent.md) when writing an intent. Save the small JSON plan in the support directory. Analyses declared only in the intent are temporary validation analyses; they do not add directives to the delivered NET.
+2. Read [validation intent](references/validation-intent.md) when writing an intent. Save the small JSON plan in the support directory. If nominal and corner limits differ, keep separate requirements with `scope: nominal` and `scope: corners` in that same plan; default `scope: all` applies a limit to both.
 3. Run one complete plan using absolute paths:
 
    ```powershell
@@ -31,7 +31,9 @@ The canonical `.net`/`.cir` reported by the runner is the circuit source of trut
 4. Read the compact result first: `status`, `failure_class`, `failed_requirements`, `summary_path`, `ltspice_calls`, and `evidence_reused`. Use its `canonical_net` for every subsequent step. Inspect the summary for measurements, artifact paths, and failure reasons; open RAW/LOG only when diagnosis or requested analysis needs them.
 5. Fix the demonstrated cause and rerun the affected plan. Never remove requirements, loosen targets, omit requested corners, substitute models, or change the topology just to obtain PASS. A range/coverage failure can require a better analysis rather than different components. Do not repeat an unchanged failing command without new evidence.
 
-The helper normalizes safe representation errors, checks the plan, stages dependencies, runs the existing suite, and manages evidence. Do not recreate these mechanisms in ad hoc scripts. New simulation jobs require fresh RAW/LOG and valid logs even when LTspice exits with code 0. Let the suite reuse fingerprint-matched evidence; old files alone are not proof.
+The helper normalizes safe representation errors, checks the plan, stages dependencies, runs the existing suite, and manages evidence. Do not recreate these mechanisms in ad hoc scripts. New simulation jobs require fresh RAW/LOG and valid logs even when LTspice exits with code 0. Let the suite reuse fingerprint-matched evidence; old files alone are not proof. When only acceptance targets or limits change and the existing sweep covers the measurements, update those requirements and rerun the same plan to re-evaluate the evidence. Do not change sampling, directives, or circuit values merely to force a fresh simulation. Report zero new LTspice calls and the reused-evidence count when that occurs.
+
+For each existing analysis kind, the runner updates the canonical NET when the intent supplies one unambiguous explicit directive. This keeps ordinary sweep-range changes in the delivered ASC. Supplemental analysis kinds and alternative sweeps remain validation-only; choose the delivery analysis deliberately in those cases. Confirm the delivered analysis covers the measurements the user needs to reproduce.
 
 `.save` directives are removed from the canonical NET by default. Set `preserve_save: true` only when the user requests saved traces or restricted RAW variables, and include every trace needed by the requirements.
 

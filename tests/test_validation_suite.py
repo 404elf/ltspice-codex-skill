@@ -266,6 +266,67 @@ class ValidationSuiteUnitTests(unittest.TestCase):
             self.assertTrue(summary["dry_run"]["ok"])
             self.assertTrue(summary["dry_run_only"])
 
+    def test_scoped_limits_keep_nominal_and_corner_gates_in_one_suite(self) -> None:
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            net, spec_path, output = root / "circuit.net", root / "spec.json", root / "out"
+            net.write_text(".param R=1k\nV1 in 0 1\nR1 in 0 {R}\n.op\n.end\n", encoding="utf-8")
+            spec = {
+                "analyses": [{"name":"bias", "kind":"op"}, {"name":"alias", "kind":"op"}],
+                "corners": {"R": [-1, 1]},
+                "metrics": {
+                    "nominal_limit": {"analysis":"bias", "trace":"V(out)", "kind":"final", "scope":"nominal", "target":1, "tolerance_percent":3},
+                    "corner_limit": {"analysis":"alias", "trace":"V(out)", "kind":"final", "scope":"corners", "target":1, "tolerance_percent":10},
+                    "shared_limit": {"analysis":"bias", "trace":"V(out)", "kind":"final", "max":1.2},
+                },
+            }
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+            def fake_run(job_net, _executable, report_path, **_kwargs):
+                raw, log = job_net.with_suffix(".raw"), job_net.with_suffix(".log")
+                raw.write_bytes(b"scope-test-waveform")
+                log.write_text("Simulation successful\n", encoding="utf-8")
+                report_path.write_text("{}\n", encoding="utf-8")
+                return {"ok":True, "returncode":0, "fresh_raw":True, "fresh_log":True,
+                        "errors":[], "raw":str(raw), "log":str(log), "run_input":str(job_net)}
+
+            def fake_arrays(raw_path, _traces):
+                value = 1.08 if "corner" in raw_path.name else 1.02
+                return np.array([0.]), {"V(out)":np.array([value])}
+
+            argv = ["suite", "--net", str(net), "--spec", str(spec_path), "--ltspice", str(root/"LTspice.exe"), "--output", str(output)]
+            with patch.object(suite, "run_simulation", side_effect=fake_run) as runner, patch.object(suite, "raw_arrays", side_effect=fake_arrays), patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(suite.main(), 0)
+                first = json.loads((output/"validation_summary.json").read_text(encoding="utf-8"))
+                self.assertEqual(runner.call_count, 3)
+                self.assertEqual(set(first["analyses"][0]["metrics"]), {"nominal_limit", "shared_limit"})
+                self.assertEqual(len(first["corners"]), 2)
+                for corner in first["corners"]:
+                    self.assertEqual(set(corner["metrics"]), {"corner_limit", "shared_limit"})
+                spec["metrics"]["nominal_limit"]["tolerance_percent"] = 1
+                spec_path.write_text(json.dumps(spec), encoding="utf-8")
+                self.assertEqual(suite.main(), 1)
+                self.assertEqual(runner.call_count, 3)
+                second = json.loads((output/"validation_summary.json").read_text(encoding="utf-8"))
+                self.assertEqual(second["evidence_reused"], 3)
+                self.assertEqual(second["failures"], ["bias:nominal_limit"])
+
+    def test_corner_only_metric_requires_matching_corner_jobs(self) -> None:
+        net = ".param R=1k\nV1 in 0 AC 1\nR1 in 0 {R}\n.ac dec 20 10 100k\n.tran 0 1m\n.end\n"
+        spec = {
+            "analyses":[{"name":"ac", "kind":"ac"}, {"name":"tran", "kind":"tran"}],
+            "metrics":{"corner_peak":{"analysis":"ac", "trace":"V(in)", "kind":"abs_max", "scope":"corners", "max":2}},
+        }
+        for groups in (None, [], [{"analysis":"tran", "corners":{"R":[-1,1]}}]):
+            candidate = {**spec, **({"tolerance_groups":groups} if groups is not None else {})}
+            report = dry_run_spec(net, Path("circuit.net"), candidate)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("no matching corner jobs" in error for error in report["errors"]))
+        spec["tolerance_groups"] = [{"analysis":"ac", "corners":{"R":[-1,1]}}]
+        self.assertTrue(dry_run_spec(net, Path("circuit.net"), spec)["ok"])
+        spec["metrics"]["corner_peak"]["scope"] = "corner"
+        self.assertFalse(dry_run_spec(net, Path("circuit.net"), spec)["ok"])
+
     def test_metric_only_changes_reuse_evidence_without_an_extra_ltspice_call(self) -> None:
         with TemporaryDirectory() as folder:
             root = Path(folder)

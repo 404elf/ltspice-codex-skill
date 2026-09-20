@@ -57,6 +57,8 @@ The parser recognizes `tran`, `ac`, `dc`, `op`, `noise`, `tf`, and `pz`. Recogni
 
 For multiple analyses, set each requirement's `analysis` to a unique analysis name. Requirements and tolerances may instead be nested inside their analysis object; do not mix nested and top-level forms for the same field.
 
+An explicit directive updates the delivered NET before simulation when both the NET and plan have one unambiguous directive of that kind. For example, changing the plan's only `.ac` sweep also updates the canonical NET's sole `.ac` line; the separate input file is preserved. Supplemental kinds and multiple alternative sweeps are validation-only. In those cases, set the intended delivery directive in the NET explicitly instead of assuming the finalizer chooses one.
+
 ## Requirements and measurement limits
 
 Each requirement needs `measure` and `signal`; use `name` for stable reporting and `analysis` for routing. Trace names are LTspice names such as `V(out)` or `I(R1)`, not arbitrary expressions.
@@ -73,6 +75,21 @@ Each requirement needs `measure` and `signal`; use `name` for stable reporting a
 Use `min`/`max` for explicit bounds or `target` plus `tolerance` for a percentage band. `tolerance: 5` means 5%, not 0.05. Omitting tolerance with a target means zero tolerance; do not accidentally require exact floating-point equality. For a zero target, prefer explicit absolute `min`/`max` bounds. Numbers must be finite; Boolean values are not engineering quantities. Target/axis/bound values accept SPICE suffixes (`k`, `meg`, `m`, `u`, `n`, etc.); `m` means milli.
 
 Component tolerances and requirement tolerances are different: one varies the circuit, the other defines acceptance. Do not interchange them.
+
+A requirement's `scope` is `all` (default), `nominal`, or `corners`. When the user gives different nominal and corner limits, include both requirements in one plan, for example:
+
+```json
+{
+  "analyses": {"ac": ".ac dec 200 10 100k"},
+  "requirements": [
+    {"name": "nominal_cutoff", "scope": "nominal", "analysis": "ac", "measure": "fc_3db", "signal": "V(out)", "reference": "V(in)", "target": 1000, "tolerance": 2},
+    {"name": "corner_cutoff", "scope": "corners", "analysis": "ac", "measure": "fc_3db", "signal": "V(out)", "reference": "V(in)", "target": 1000, "tolerance": 20}
+  ],
+  "tolerances": {"parameters": {"R": 5, "C": 10}}
+}
+```
+
+This uses the earlier RC NET. The nominal requirement is checked only at nominal values; the corner requirement is checked at each matching corner. Limits that apply everywhere, such as a common gain minimum, omit `scope`. A `corners` requirement without matching corner jobs is rejected before simulation. Never replace the tighter nominal gate with the wider corner gate or rely only on a final-answer calculation to retain it.
 
 Measurement coverage matters:
 

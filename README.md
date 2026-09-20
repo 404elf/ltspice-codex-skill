@@ -65,6 +65,8 @@ Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 作为验证�
 
 它会先执行不调用 LTspice 的 validation-spec dry-run，提前检查分析、metric、`.param`、corner 和依赖。每个真正执行的分析和 corner 都要求新的 RAW/LOG 并解析 LOG 错误；成功的 simulation evidence 写入 `simulation_evidence.json`，按精确 NET、分析指令、参数、模型依赖和 LTspice 配置绑定。只修改 metric、target、tolerance、trace 取点或报告格式时，会重新解析匹配的 RAW，不重新调用 LTspice；电路、分析、参数、模型依赖或执行文件改变时，相关 evidence 才失效。结果集中写入 `validation_summary.json`，其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、复用次数、实际工具耗时和产物路径。原始 NET 含多个分析指令时，每个分析都会使用单独的派生 NET，不会把原始 NET 误当作某一个分析的精确输入。
 
+同一验证计划可以为 requirement 设置 `scope: nominal`、`scope: corners` 或默认的 `scope: all`，分别保留标称、容差角落或两者共用的验收门槛；没有对应角落任务的 corner-only requirement 会提前报错。对于 NET 中已有且无歧义的分析类型，intent 中明确更新的扫频等指令会先写入 canonical NET 再验证，最终 ASC 因而带有同样的设置；额外分析类型和同类多套扫频仍需明确选择交付设置。
+
 数值测量会拒绝 NaN/Infinity、超出仿真范围的取点和未观测到 −3 dB 交点的截止频率请求。增益是线性幅值比，取点和截止频率使用已有采样点；应选择足够的扫频范围和分辨率。没有填写定量 requirements 的 PASS 只表示仿真执行通过，不能证明未声明的设计指标。
 
 RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需要文本调试时给 `scripts/run_ltspice.py` 增加 `--ascii`。
