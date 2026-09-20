@@ -51,19 +51,21 @@ $ltspice-sim-v2
 设计并仿真一个截止频率为 1 kHz 的 RC 低通滤波器。
 ```
 
-Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 模式。它们是最终验证计划，不是 `QUICK`→`STANDARD`→`STRICT` 的逐级重复执行。`STANDARD`/`STRICT` 会把 AC、瞬态、DC、角落或扫参等工作交给确定性的 validation suite 执行；如果计划已经包含 nominal 分析，就不会再额外运行重复的 QUICK。
+Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 作为验证计划标签，不是逐级重复执行的阶段。实际仿真范围由明确填写的 analyses、requirements 和 tolerances 决定：`AUTO` 不会自动推断分析，`STRICT` 不会自动增加检查，`BATCH` 不会自动生成候选电路。
 
-validation suite 的核心调用形式为：
+普通电路任务使用统一的 intent 入口；可运行的 NET/JSON 示例、测量字段和容差写法见 [validation intent](references/validation-intent.md)。
 
 ```powershell
-<configured-python> scripts/run_validation_suite.py `
-  --net <circuit.net> `
-  --spec <validation-spec.json> `
-  --ltspice <configured-ltspice.exe> `
-  --markdown <output-directory>/validation_summary.md
+& '<configured-python>' '<skill-root>\scripts\run_validation_intent.py' `
+  --net '<absolute-circuit.net>' `
+  --intent '<absolute-validation-intent.json>'
 ```
 
+入口会规范化 intent、解析本机配置、准备 canonical NET，然后调用现有 validation suite。读取它返回的 `canonical_net` 和 `summary_path`，用同一个 canonical NET 完成后续转换。`expected_asc` 是计划输出路径，不代表 ASC 已生成。底层 suite 和排错命令见 [setup and troubleshooting](references/operations.md)。
+
 它会先执行不调用 LTspice 的 validation-spec dry-run，提前检查分析、metric、`.param`、corner 和依赖。每个真正执行的分析和 corner 都要求新的 RAW/LOG 并解析 LOG 错误；成功的 simulation evidence 写入 `simulation_evidence.json`，按精确 NET、分析指令、参数、模型依赖和 LTspice 配置绑定。只修改 metric、target、tolerance、trace 取点或报告格式时，会重新解析匹配的 RAW，不重新调用 LTspice；电路、分析、参数、模型依赖或执行文件改变时，相关 evidence 才失效。结果集中写入 `validation_summary.json`，其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、复用次数、实际工具耗时和产物路径。原始 NET 含多个分析指令时，每个分析都会使用单独的派生 NET，不会把原始 NET 误当作某一个分析的精确输入。
+
+数值测量会拒绝 NaN/Infinity、超出仿真范围的取点和未观测到 −3 dB 交点的截止频率请求。增益是线性幅值比，取点和截止频率使用已有采样点；应选择足够的扫频范围和分辨率。没有填写定量 requirements 的 PASS 只表示仿真执行通过，不能证明未声明的设计指标。
 
 RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需要文本调试时给 `scripts/run_ltspice.py` 增加 `--ascii`。
 

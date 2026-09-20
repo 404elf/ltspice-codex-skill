@@ -92,6 +92,24 @@ class ValidationIntentTests(unittest.TestCase):
         with self.assertRaises(intent.IntentError):
             intent.normalize_intent({"analyses": {"op": ".op"}, "analysis": {"op": ".op"}})
 
+    def test_nonfinite_requirement_tolerance_is_rejected(self):
+        for value in (float("nan"), float("inf"), "NaN", "Infinity", "1e309"):
+            with self.subTest(value=value), self.assertRaises(intent.IntentError):
+                intent.normalize_intent({
+                    "analyses": {"op": ".op"},
+                    "requirements": [{"measure": "final", "signal": "V(out)",
+                                      "target": 1, "tolerance": value}],
+                })
+
+    def test_nonfinite_component_tolerance_is_rejected(self):
+        for value in ("NaN", {"percent": "Infinity"}, [-5, "NaN"],
+                      {"low": "-Infinity", "high": 5}):
+            with self.subTest(value=value), self.assertRaises(intent.IntentError):
+                intent.normalize_intent({
+                    "analyses": {"op": ".op"},
+                    "tolerances": {"parameters": {"R": value}},
+                })
+
     def test_nested_requirements_and_tolerances_route_by_analysis(self):
         normalized = intent.normalize_intent({
             "analyses": {

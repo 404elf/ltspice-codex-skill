@@ -1,4 +1,4 @@
 interface:
   display_name: "LTspice Simulation v2"
-  short_description: "Independent LTspice simulation and Weave validation"
-  default_prompt: "Use $ltspice-sim-v2 immediately: decide the engineering design, then call its deterministic validation-intent entrypoint and read the compact result first."
+  short_description: "Design and validate LTspice circuits and schematics"
+  default_prompt: "Use $ltspice-sim-v2 to design or update my circuit, verify its requested measurements, and deliver the validated LTspice files."

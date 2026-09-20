@@ -84,6 +84,72 @@ class ValidationSuiteUnitTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("> max", reason or "")
 
+    def test_nonfinite_measurements_cannot_pass_a_gate(self) -> None:
+        for value in (float("nan"), float("inf"), -float("inf")):
+            for spec in ({}, {"max": 1}, {"min": 0}, {"target": 1}):
+                with self.subTest(value=value, spec=spec):
+                    ok, reason = check_metric(value, spec)
+                    self.assertFalse(ok)
+                    self.assertIn("finite", reason or "")
+
+    def test_nonfinite_limits_cannot_pass_a_gate(self) -> None:
+        for field in ("min", "max", "target", "tolerance_percent"):
+            with self.subTest(field=field):
+                ok, reason = check_metric(1, {field: float("nan")})
+                self.assertFalse(ok)
+                self.assertIn("finite", reason or "")
+
+    def test_axis_measurements_require_coverage_and_keep_nearest_sample(self) -> None:
+        axis = np.array([10., 100., 1000.])
+        values = {"V(out)": np.array([1., 0.8, 0.5]), "V(in)": np.ones(3)}
+        for kind in ("value_at", "gain_at"):
+            spec = {"kind": kind, "trace": "V(out)", "reference": "V(in)"}
+            for target in (0, 10000):
+                with self.subTest(kind=kind, target=target), self.assertRaisesRegex(ValueError, "outside"):
+                    suite.metric_value({**spec, "x": target}, axis, values)
+            self.assertEqual(suite.metric_value({**spec, "x": 90}, axis, values), 0.8)
+            self.assertEqual(suite.metric_value({**spec, "x": 1000}, axis, values), 0.5)
+            self.assertEqual(suite.metric_value({**spec, "x": "1k"}, axis, values), 0.5)
+
+    def test_cutoff_requires_an_observed_crossing(self) -> None:
+        axis = np.array([10., 100., 1000.])
+        for response in ("lowpass", "highpass"):
+            spec = {"kind": "fc_3db", "trace": "V(out)", "response": response}
+            for data in (np.ones(3), np.zeros(3)):
+                with self.subTest(response=response, data=data), self.assertRaises(ValueError):
+                    suite.metric_value(spec, axis, {"V(out)": data})
+        self.assertEqual(suite.metric_value(
+            {"kind": "fc_3db", "trace": "V(out)", "response": "lowpass"},
+            axis, {"V(out)": np.array([1., 0.8, 0.5])}), 1000.)
+        self.assertEqual(suite.metric_value(
+            {"kind": "fc_3db", "trace": "V(out)", "response": "highpass"},
+            axis, {"V(out)": np.array([0.5, 0.8, 1.])}), 10.)
+
+    def test_invalid_waveform_data_fails_the_metric(self) -> None:
+        spec = {"kind": "gain_at", "trace": "V(out)", "reference": "V(in)", "x": 10}
+        for axis, output, reference in (
+            ([10, 100], [1, float("nan")], [1, 1]),
+            ([10, float("inf")], [1, 1], [1, 1]),
+            ([10, 100], [1, 1], [1, float("nan")]),
+            ([10, 100], [1], [1, 1]),
+            ([10, 100], [1, 1], [1]),
+        ):
+            with self.subTest(axis=axis, output=output, reference=reference), self.assertRaises(ValueError):
+                suite.metric_value(spec, np.array(axis),
+                                   {"V(out)": np.array(output), "V(in)": np.array(reference)})
+        with self.assertRaisesRegex(ValueError, "zero"):
+            suite.metric_value({"kind": "fc_3db", "trace": "V(out)", "reference": "V(in)"},
+                               np.array([10, 100]), {"V(out)": np.ones(2), "V(in)": np.zeros(2)})
+
+    def test_invalid_measurement_is_reported_as_failure_without_nan_json(self) -> None:
+        with patch.object(suite, "raw_arrays", return_value=(np.array([0.]), {"V(out)": np.array([float("nan")])})):
+            results, failures = evaluate_metrics(Path("unused.raw"), {
+                "out": {"kind": "max", "trace": "V(out)", "max": 1},
+            })
+        self.assertEqual(failures, ["out"])
+        self.assertIsNone(results["out"]["value"])
+        json.dumps(results, allow_nan=False)
+
     def test_negative_target_tolerance_has_ordered_bounds(self) -> None:
         self.assertEqual(check_metric(-110.0, {"target": -100.0, "tolerance_percent": 10}), (True, None))
         ok, reason = check_metric(-111.0, {"target": -100.0, "tolerance_percent": 10})
@@ -142,6 +208,17 @@ class ValidationSuiteUnitTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertTrue(any("x must be numeric" in item for item in report["errors"]))
         self.assertTrue(any("min must not exceed max" in item for item in report["errors"]))
+
+    def test_dry_run_rejects_nonfinite_and_boolean_metric_numbers(self) -> None:
+        net = "V1 in 0 AC 1\nR1 in 0 1k\n.ac dec 10 10 10k\n.end\n"
+        for field in ("x", "target", "min", "max", "tolerance_percent"):
+            for value in (float("nan"), float("inf"), "-Infinity", "1e309", True):
+                with self.subTest(field=field, value=value):
+                    metric = {"analysis": "ac", "trace": "V(in)", "kind": "value_at", "x": 100, field: value}
+                    report = dry_run_spec(net, Path("invalid-metric.net"), {
+                        "analyses": [{"name": "ac", "kind": "ac"}], "metrics": {"gain": metric},
+                    })
+                    self.assertFalse(report["ok"])
 
     def test_monotonic_corner_plan_reduces_two_parameters_to_two_endpoints(self) -> None:
         source = ".param R=1k C=100n\n.tran 0 1m\n.end\n"

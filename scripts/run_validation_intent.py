@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -88,6 +89,8 @@ def _number(value: object, label: str) -> float:
         result = float(_text(value, label).removesuffix("%").strip())
     except ValueError as exc:
         raise IntentError(f"{label} must be numeric") from exc
+    if not math.isfinite(result):
+        raise IntentError(f"{label} must be finite")
     if result < 0:
         raise IntentError(f"{label} must not be negative")
     return result
@@ -97,9 +100,12 @@ def _signed_number(value: object, label: str) -> float:
     if isinstance(value, bool):
         raise IntentError(f"{label} must be numeric")
     try:
-        return float(_text(value, label).removesuffix("%").strip())
+        result = float(_text(value, label).removesuffix("%").strip())
     except ValueError as exc:
         raise IntentError(f"{label} must be numeric") from exc
+    if not math.isfinite(result):
+        raise IntentError(f"{label} must be finite")
+    return result
 
 
 def _take(data: dict[str, object], *names: str) -> object | None:

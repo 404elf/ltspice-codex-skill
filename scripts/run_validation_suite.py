@@ -75,11 +75,11 @@ def bounded_job_prefix(output: Path, prefix: str) -> str:
 
 
 def parse_number(value: object) -> float:
-    if isinstance(value, (int, float)):
-        return float(value)
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a numeric SPICE value")
     text = str(value).strip()
     try:
-        return float(text)
+        result = float(text)
     except ValueError:
         match = re.fullmatch(r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)([a-z]+)?", text, re.IGNORECASE)
         if not match or not match.group(2):
@@ -87,7 +87,10 @@ def parse_number(value: object) -> float:
         suffix = match.group(2).lower()
         if suffix not in SUFFIXES:
             raise ValueError(f"unsupported SPICE suffix: {suffix}")
-        return float(match.group(1)) * SUFFIXES[suffix]
+        result = float(match.group(1)) * SUFFIXES[suffix]
+    if not math.isfinite(result):
+        raise ValueError(f"numeric SPICE value must be finite: {value}")
+    return result
 
 
 def format_value(value: object) -> str:
@@ -719,6 +722,20 @@ def metric_value(spec: dict[str, object], axis: np.ndarray, values: dict[str, np
     real = np.real(data)
     if data.size == 0:
         raise ValueError("trace has no samples")
+    if not np.all(np.isfinite(data)):
+        raise ValueError("trace contains non-finite samples")
+    if kind in AXIS_METRICS:
+        x = np.real(np.asarray(axis).reshape(-1))
+        if x.size != data.size or not np.all(np.isfinite(x)):
+            raise ValueError("analysis axis must have one finite value per sample")
+        if kind in {"value_at", "value_at_x", "gain_at", "gain_at_frequency"}:
+            target = parse_number(spec["x"])
+            if not float(np.min(x)) <= target <= float(np.max(x)):
+                raise ValueError(f"requested x {target} is outside simulated range [{np.min(x)}, {np.max(x)}]")
+        if spec.get("reference"):
+            reference_data = np.asarray(values[str(spec["reference"])]).reshape(-1)
+            if reference_data.size != data.size or not np.all(np.isfinite(reference_data)):
+                raise ValueError("reference trace must have one finite value per sample")
     if kind in {"value", "scalar"}:
         return float(real[-1])
     if kind in {"abs", "absolute"}:
@@ -738,14 +755,12 @@ def metric_value(spec: dict[str, object], axis: np.ndarray, values: dict[str, np
     if kind in {"final", "last"}:
         return float(real[-1])
     if kind in {"value_at", "value_at_x"}:
-        target = float(spec["x"])
-        index = int(np.argmin(np.abs(np.real(axis.reshape(-1)) - target)))
+        index = int(np.argmin(np.abs(x - target)))
         return float(np.real(data[index]))
     if kind in {"gain_at", "gain_at_frequency"}:
         reference = str(spec["reference"])
         reference_data = np.asarray(values[reference]).reshape(-1)
-        target = float(spec["x"])
-        index = int(np.argmin(np.abs(np.real(axis.reshape(-1)) - target)))
+        index = int(np.argmin(np.abs(x - target)))
         denominator = abs(reference_data[index])
         if denominator == 0:
             raise ValueError("gain reference is zero at requested x")
@@ -754,21 +769,29 @@ def metric_value(spec: dict[str, object], axis: np.ndarray, values: dict[str, np
         reference = spec.get("reference")
         response = np.abs(data)
         if reference:
-            reference_data = np.asarray(values[str(reference)]).reshape(-1)
-            response = response / np.maximum(np.abs(reference_data), np.finfo(float).tiny)
-        x = np.real(axis.reshape(-1))
+            if np.any(np.abs(reference_data) == 0):
+                raise ValueError("cutoff reference is zero in simulated range")
+            response = response / np.abs(reference_data)
         if response.size < 2:
             raise ValueError("not enough samples for fc_3db")
+        if not np.all(np.diff(x) > 0):
+            raise ValueError("fc_3db requires a strictly increasing analysis axis")
+        if not np.all(np.isfinite(response)) or np.max(response) <= 0:
+            raise ValueError("fc_3db requires a finite, nonzero response")
         threshold = float(np.max(response)) / math.sqrt(2.0)
         direction = str(spec.get("response", "lowpass")).lower()
         if direction == "highpass":
             indices = np.where(response <= threshold)[0]
             indices = indices[indices < int(np.argmax(response))]
-            index = int(indices[-1]) if indices.size else 0
+            if not indices.size:
+                raise ValueError("no -3 dB crossing in simulated range; extend the sweep")
+            index = int(indices[-1])
         else:
             peak = int(np.argmax(response))
             indices = np.where(response[peak:] <= threshold)[0]
-            index = peak + int(indices[0]) if indices.size else len(response) - 1
+            if not indices.size:
+                raise ValueError("no -3 dB crossing in simulated range; extend the sweep")
+            index = peak + int(indices[0])
         return float(x[index])
     raise ValueError(f"unsupported metric kind: {kind}")
 
@@ -796,13 +819,19 @@ def metric_specs_for_job(
 
 
 def check_metric(value: float, spec: dict[str, object]) -> tuple[bool, str | None]:
-    if "min" in spec and value < float(spec["min"]):
+    if not math.isfinite(value):
+        return False, "measured value must be finite"
+    try:
+        limits = {key: parse_number(spec[key]) for key in ("min", "max", "target", "tolerance_percent") if key in spec}
+    except ValueError as exc:
+        return False, str(exc)
+    if "min" in limits and value < limits["min"]:
         return False, f"value {value} < min {spec['min']}"
-    if "max" in spec and value > float(spec["max"]):
+    if "max" in limits and value > limits["max"]:
         return False, f"value {value} > max {spec['max']}"
-    if "target" in spec:
-        target = float(spec["target"])
-        tolerance = float(spec.get("tolerance_percent", 0.0)) / 100.0
+    if "target" in limits:
+        target = limits["target"]
+        tolerance = limits.get("tolerance_percent", 0.0) / 100.0
         if tolerance < 0:
             return False, f"tolerance_percent {spec.get('tolerance_percent')} must not be negative"
         if abs(target) > np.finfo(float).tiny:
@@ -829,6 +858,8 @@ def evaluate_metrics(raw_path: Path, specs: dict[str, dict[str, object]]) -> tup
     for name, spec in specs.items():
         try:
             value = metric_value(spec, axis, values)
+            if not math.isfinite(value):
+                raise ValueError("measured value must be finite")
             ok, reason = check_metric(value, spec)
             results[name] = {"value": value, "ok": ok, "reason": reason, "spec": spec}
             if not ok:
