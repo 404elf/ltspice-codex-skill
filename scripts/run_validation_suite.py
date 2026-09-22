@@ -27,6 +27,7 @@ import numpy as np
 from PyLTSpice import RawRead
 
 from run_ltspice import run_simulation
+from parse_raw import trace_waveform
 from validation_support import (
     EvidenceStore,
     dependency_manifest,
@@ -40,7 +41,7 @@ from validation_support import (
 )
 
 
-SUITE_VERSION = "6"
+SUITE_VERSION = "7"
 PREFLIGHT_VERSION = "3"
 ANALYSIS_RE = re.compile(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", re.IGNORECASE)
 SUFFIXES = {
@@ -759,10 +760,12 @@ def raw_arrays(raw_path: Path, traces: list[str]) -> tuple[np.ndarray, dict[str,
     raw = RawRead(raw_path, traces_to_read=traces or None, verbose=False)
     names = list(raw.get_trace_names())
     resolved = {item: trace_name(names, item) for item in traces}
-    values = {requested: np.asarray(raw.get_trace(actual).get_wave()) for requested, actual in resolved.items()}
+    values = {requested: trace_waveform(raw, actual) for requested, actual in resolved.items()}
     if "frequency" in (name.lower() for name in names):
         axis_name = trace_name(names, "frequency")
-        axis = np.asarray(raw.get_trace(axis_name).get_wave())
+        axis = trace_waveform(raw, axis_name)
+    elif "time" in (name.lower() for name in names):
+        axis = trace_waveform(raw, trace_name(names, "time"))
     else:
         try:
             raw_axis = raw.get_axis()

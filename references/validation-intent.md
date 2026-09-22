@@ -94,7 +94,7 @@ This uses the earlier RC NET. The nominal requirement is checked only at nominal
 
 Measurement coverage matters:
 
-- `value_at` and `gain_at` reject points outside the simulated axis range; choose adequate sample density inside it. They use the nearest sample, without interpolation.
+- `value_at` uses absolute simulation time for transient data, including the RAW saved-time offset. `value_at` and `gain_at` reject points outside the simulated axis range; choose adequate sample density inside it. They use the nearest sample, without interpolation.
 - `fc_3db` needs a nonzero response and an observed crossing. Sweep across both the passband and stopband, and make frequency resolution small relative to the permitted error. Low-pass returns the first below-threshold sample after the peak; high-pass returns the last below-threshold sample before it. This metric does not establish a general band-pass or resonant-filter specification.
 - Transient aggregate metrics include startup unless the analysis's saved interval excludes it. Use separate analyses when both startup and steady-state behavior matter. For example, `.tran 0 25m 20m 100n` simulates to 25 ms and saves 20-25 ms; the stop time is absolute, not the saved duration. `.tran 0 5m 20m` saves no useful interval and is rejected before simulation.
 - Invalid/non-finite trace values or undefined references fail the measurement. Do not treat missing coverage as proof of compliance.

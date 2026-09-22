@@ -63,6 +63,58 @@ class TransientSemanticsTests(unittest.TestCase):
             with self.subTest(directive=directive):
                 self.assertIsNone(suite._validate_tran_directive(directive))
 
+    @staticmethod
+    def offset_raw_text(offset="0.2", *, dc=False):
+        plot = "DC transfer characteristic" if dc else "Transient Analysis"
+        axis = "V1\tvoltage" if dc else "time\ttime"
+        return (f"Title: Offset regression\nDate: test\nPlotname: {plot}\nFlags: real forward\n"
+                f"No. Variables: 2\nNo. Points: 3\nOffset: {offset}\n"
+                f"Command: LTspice\nVariables:\n\t0\t{axis}\n\t1\tV(out)\tvoltage\n"
+                "Values:\n0\t0\n\t2\n1\t0.05\n\t3\n2\t0.1\n\t4\n")
+
+    def test_saved_time_offset_is_applied_to_point_measurements(self):
+        with TemporaryDirectory() as folder:
+            raw = Path(folder) / "offset.raw"
+            raw.write_text(self.offset_raw_text(), encoding="utf-8")
+            x, values = suite.raw_arrays(raw, ["V(out)"])
+            np.testing.assert_allclose(x, [.2, .25, .3])
+            measured, failures = suite.evaluate_metrics(raw, {
+                "at_250ms": {"kind": "value_at", "trace": "V(out)", "x": .25, "min": 2.99, "max": 3.01},
+                "outside": {"kind": "value_at", "trace": "V(out)", "x": .1},
+                "mean": {"kind": "mean", "trace": "V(out)", "min": 2.99, "max": 3.01},
+            }, analysis_kind="tran")
+            self.assertTrue(measured["at_250ms"]["ok"])
+            self.assertTrue(measured["mean"]["ok"])
+            self.assertEqual(failures, ["outside"])
+
+    def test_raw_inspection_reports_the_same_absolute_time(self):
+        import parse_raw
+        with TemporaryDirectory() as folder:
+            raw = Path(folder) / "offset.raw"
+            raw.write_text(self.offset_raw_text(), encoding="utf-8")
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["parse_raw", "--raw", str(raw), "--trace", "time"]), contextlib.redirect_stdout(output):
+                self.assertEqual(parse_raw.main(), 0)
+            stats = json.loads(output.getvalue())["stats"]["time"]
+            self.assertAlmostEqual(stats["first"], .2)
+            self.assertAlmostEqual(stats["last"], .3)
+
+    def test_offset_does_not_shift_dc_axes_and_zero_offset_stays_zero(self):
+        with TemporaryDirectory() as folder:
+            for dc, offset in ((True, ".2"), (False, "0")):
+                raw = Path(folder) / f"offset-{dc}.raw"
+                raw.write_text(self.offset_raw_text(offset, dc=dc), encoding="utf-8")
+                x, _ = suite.raw_arrays(raw, ["V(out)"])
+                np.testing.assert_allclose(x, [0, .05, .1])
+
+    def test_invalid_raw_time_offset_fails(self):
+        with TemporaryDirectory() as folder:
+            for offset in ("nan", "-0.2"):
+                raw = Path(folder) / "bad.raw"
+                raw.write_text(self.offset_raw_text(offset), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    suite.raw_arrays(raw, ["V(out)"])
+
     def test_preflight_counts_switch_pins_and_present_ground(self):
         circuit = "* switch\nV1 in 0 5\nVctrl ctrl 0 1\nS1 in out ctrl 0 SWMOD\nR1 out 0 1k\n.model SWMOD SW(Ron=0.01 Roff=1G Vt=.5)\n.tran 0 1m\n.end\n"
         with TemporaryDirectory() as folder:

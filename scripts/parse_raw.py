@@ -19,6 +19,18 @@ def resolve_trace(names: list[str], requested: str) -> str:
     raise KeyError(f"trace not found: {requested}; available={names}")
 
 
+def trace_waveform(raw: RawRead, name: str) -> np.ndarray:
+    """Return physical trace coordinates, including LTspice's saved-time offset."""
+
+    values = np.asarray(raw.get_trace(name).get_wave())
+    if name.lower() == "time":
+        offset = float(raw.get_raw_property().get("Offset", 0))
+        if not np.isfinite(offset) or offset < 0:
+            raise ValueError("RAW time offset must be finite and nonnegative")
+        values = values + offset
+    return values
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Parse an LTspice .raw file with PyLTSpice.")
     parser.add_argument("--raw", required=True, type=Path)
@@ -36,7 +48,7 @@ def main() -> int:
     stats: dict[str, object] = {}
     for item in requested:
         name = resolve_trace(names, item)
-        values = np.asarray(raw.get_trace(name).get_wave())
+        values = trace_waveform(raw, name)
         real = np.real(values)
         entry: dict[str, object] = {
             "samples": int(values.size),
