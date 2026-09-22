@@ -1,4 +1,7 @@
 interface:
   display_name: "LTspice Simulation v2"
-  short_description: "Design and validate LTspice circuits and schematics"
-  default_prompt: "Use $ltspice-sim-v2 to design or update my circuit, verify its requested measurements, and deliver the validated LTspice files."
+  short_description: "Verified circuit diagrams, schematics, and LTspice runs"
+  default_prompt: "Use $ltspice-sim-v2 to create my circuit diagram, verify its requirements, and deliver the editable LTspice schematic."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,11 +1,11 @@
 ---
 name: ltspice-sim-v2
-description: Design, edit, simulate, and validate LTspice circuits; measure RAW/LOG results, check component tolerances, and convert verified NET files into ASC schematics with Weave. Use for requested LTspice circuit work and simulation troubleshooting.
+description: Design and verify electronic circuits and deliver editable LTspice schematics. Use for circuit diagram / 电路图 / 原理图 requests, implementing a transfer function or circuit from an image, and LTspice/SPICE design, edits, simulation, or troubleshooting. Short follow-ups such as 给我电路图 or 画出来 inherit the electronic-circuit context; an LTspice keyword is not required. Exclude theory-only explanations, non-electrical block/flow/decorative diagrams, and work explicitly targeting another EDA tool.
 ---
 
 # LTspice Simulation v2
 
-Use the user's requested scope: circuit design, edits, simulation, result inspection, or troubleshooting. A theory explanation or review alone does not require creating a circuit. This skill is independent of the legacy LTSPICE-AI project and `ltspice-circuit-simulator` skill.
+Interpret circuit-diagram requests and short follow-ups in the context of the preceding circuit, transfer function, or image. Carry forward the given design targets and treat the requested circuit diagram as a schematic deliverable even when the user does not mention LTspice or simulation. A request only to locate or open an existing diagram means retrieve it and its evidence, without redesigning it. Honor explicit theory-only, illustration-only, no-simulation, or other-EDA requests. This skill is independent of the legacy LTSPICE-AI project and `ltspice-circuit-simulator` skill.
 
 ## Start
 
@@ -38,6 +38,8 @@ For each existing analysis kind, the runner updates the canonical NET when the i
 `.save` directives are removed from the canonical NET by default. Set `preserve_save: true` only when the user requests saved traces or restricted RAW variables, and include every trace needed by the requirements.
 
 ## Finalize requested schematics
+
+For a working 电路图 / 原理图, deliver the editable `.asc` and its validation evidence, unless the user explicitly requests a different output format. An SVG/PNG preview must come from the verified circuit; independently drawing symbols and wires or checking SVG/XML syntax does not verify electrical connectivity. If the user explicitly wants only an illustration or no simulation, respect that scope and label the result unverified.
 
 After electrical PASS, convert that exact canonical NET once:
 
