@@ -40,8 +40,8 @@ from validation_support import (
 )
 
 
-SUITE_VERSION = "5"
-PREFLIGHT_VERSION = "2"
+SUITE_VERSION = "6"
+PREFLIGHT_VERSION = "3"
 ANALYSIS_RE = re.compile(r"^\s*\.(tran|ac|dc|op|noise|tf|pz)\b", re.IGNORECASE)
 SUFFIXES = {
     "t": 1e12,
@@ -227,6 +227,28 @@ def _validate_dc_directive(directive: str) -> str | None:
     return None
 
 
+def _validate_tran_directive(directive: str) -> str | None:
+    tokens = directive.split(";", 1)[0].split()[1:]
+    tokens = [token for token in tokens if token.lower() not in {"uic", "startup", "steady"}]
+    if not tokens:
+        return ".tran requires a stop time"
+    # LTspice evaluates parameter expressions. Only reject known numeric
+    # contradictions here, rather than imposing a second expression parser.
+    try:
+        values = [parse_number(token) for token in tokens[:4]]
+    except ValueError:
+        return None
+    if len(values) == 1:
+        return None if values[0] > 0 else ".tran stop time must be positive"
+    step, stop = values[:2]
+    start = values[2] if len(values) > 2 else 0.0
+    if start < 0:
+        return ".tran save start must be nonnegative"
+    if stop <= start:
+        return ".tran stop time must exceed save start; use .tran 0 25m 20m for the 20-25 ms interval"
+    return None
+
+
 def _metric_analysis_target(raw: dict[str, object], analyses: list[dict[str, object]]) -> dict[str, object] | None:
     target = raw.get("analysis")
     if target is None:
@@ -300,6 +322,10 @@ def dry_run_spec(source_text: str, net: Path, spec: object) -> dict[str, object]
                 dc_error = _validate_dc_directive(directive)
                 if dc_error:
                     errors.append(f"analysis {item['name']}: {dc_error}")
+            if str(item["kind"]).lower() == "tran":
+                tran_error = _validate_tran_directive(directive)
+                if tran_error:
+                    errors.append(f"analysis {item['name']}: {tran_error}")
 
     raw_metrics = spec.get("metrics", {})
     if raw_metrics is None:
@@ -748,7 +774,10 @@ def raw_arrays(raw_path: Path, traces: list[str]) -> tuple[np.ndarray, dict[str,
     return axis, values
 
 
-def metric_value(spec: dict[str, object], axis: np.ndarray, values: dict[str, np.ndarray]) -> float:
+def metric_value(
+    spec: dict[str, object], axis: np.ndarray, values: dict[str, np.ndarray],
+    *, analysis_kind: str | None = None,
+) -> float:
     kind = str(spec.get("kind", "abs_max")).lower()
     trace = str(spec.get("trace", ""))
     data = np.asarray(values[trace]).reshape(-1)
@@ -781,6 +810,21 @@ def metric_value(spec: dict[str, object], axis: np.ndarray, values: dict[str, np
         return float(np.max(np.abs(data)))
     if kind in {"peak_to_peak", "p2p"}:
         return float(np.max(real) - np.min(real))
+    if kind in {"mean", "rms"} and analysis_kind == "tran":
+        # Adaptive LTspice samples are not equally spaced in time. Integrate
+        # the piecewise-linear waveform, including its exact squared integral.
+        x = np.real(np.asarray(axis).reshape(-1)).astype(float)
+        if x.size != data.size or x.size < 2 or not np.all(np.isfinite(x)):
+            raise ValueError("transient average needs a finite time axis with at least two samples")
+        dt = np.diff(x)
+        duration = float(x[-1] - x[0])
+        if np.any(dt < 0) or duration <= 0:
+            raise ValueError("transient average needs nondecreasing time and a positive duration")
+        y = real.astype(float)
+        if kind == "mean":
+            return float(np.sum(dt * (y[:-1] + y[1:]) / 2) / duration)
+        squared_integral = np.sum(dt * (y[:-1] ** 2 + y[:-1] * y[1:] + y[1:] ** 2) / 3)
+        return float(np.sqrt(squared_integral / duration))
     if kind == "mean":
         return float(np.mean(real))
     if kind == "rms":
@@ -881,7 +925,9 @@ def check_metric(value: float, spec: dict[str, object]) -> tuple[bool, str | Non
     return True, None
 
 
-def evaluate_metrics(raw_path: Path, specs: dict[str, dict[str, object]]) -> tuple[dict[str, object], list[str]]:
+def evaluate_metrics(
+    raw_path: Path, specs: dict[str, dict[str, object]], *, analysis_kind: str | None = None,
+) -> tuple[dict[str, object], list[str]]:
     traces = []
     for spec in specs.values():
         for key in ("trace", "reference"):
@@ -894,7 +940,7 @@ def evaluate_metrics(raw_path: Path, specs: dict[str, dict[str, object]]) -> tup
     failures: list[str] = []
     for name, spec in specs.items():
         try:
-            value = metric_value(spec, axis, values)
+            value = metric_value(spec, axis, values, analysis_kind=analysis_kind)
             if not math.isfinite(value):
                 raise ValueError("measured value must be finite")
             ok, reason = check_metric(value, spec)
@@ -1320,7 +1366,7 @@ def main() -> int:
                 metric_failures: list[str] = []
                 if result.get("ok") and raw_path.is_file() and metric_specs:
                     try:
-                        metric_results, metric_failures = evaluate_metrics(raw_path, metric_specs)
+                        metric_results, metric_failures = evaluate_metrics(raw_path, metric_specs, analysis_kind=kind)
                     except Exception as exc:
                         metric_failures = list(metric_specs)
                         metric_results = {

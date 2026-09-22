@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from run_ltspice import run_simulation
+from validation_support import dependency_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +114,18 @@ def rewrite_asc_dependency_paths(asc_text: str, net: Path, asc: Path) -> tuple[s
     return "\n".join(lines) + "\n", changed
 
 
+def explicit_subcircuits(net: Path) -> list[str]:
+    """Names whose definitions are supplied by this NET's readable dependencies."""
+
+    text = net.read_text(encoding="utf-8", errors="replace")
+    manifest = dependency_manifest(net, text)
+    bodies = [text]
+    paths = {item["resolved"] for item in manifest.get("files", []) if item.get("content_verified")}
+    bodies.extend(Path(path).read_text(encoding="utf-8", errors="replace") for path in sorted(paths))
+    return sorted({name.casefold() for body in bodies
+                   for name in re.findall(r"(?im)^\s*\.subckt\s+(\S+)", body)})
+
+
 def default_asc_path(net: Path) -> Path:
     """Use the delivery-root ASC convention for canonical support NETs."""
 
@@ -209,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     before = sha256(net)
     conversion = run([node, str(weave_js), "convert", str(net), str(asc)], weave_dir)
     verification = None
+    metadata = None
     smoke_result: dict[str, object] | None = None
     smoke_verdict = "NOT_RUN"
     weave_verdict = "ERROR"
@@ -220,23 +234,30 @@ def main(argv: list[str] | None = None) -> int:
         rewritten, dependency_paths_rewritten = rewrite_asc_dependency_paths(asc_text, net, asc)
         if dependency_paths_rewritten:
             asc.write_bytes(rewritten.encode("latin-1"))
-        verification = run([node, str(weave_js), "verify", str(net), str(asc)], weave_dir)
-        match = verification.returncode == 0 and re.search(
-            r"(?im)^\s*MATCH(?:\s|$)", verification.stdout or ""
-        )
-        weave_verdict = "MATCH" if match else "MISMATCH"
-        if match:
-            smoke_result = run_simulation(
-                asc,
-                ltspice,
-                result_path.parent / f"{net.stem}-asc.run-report.json",
-                artifact_stem=f"{net.stem}-asc",
-                output_dir=result_path.parent,
-            )
-            smoke_verdict = "PASS" if smoke_result.get("ok") else "FAIL"
-            verdict = "MATCH" if smoke_verdict == "PASS" else "ASC_SMOKE_FAILED"
+        metadata = run([
+            node, str(Path(__file__).with_name("weave_metadata.js")),
+            str(weave_dir), str(net), str(asc), json.dumps(explicit_subcircuits(net)),
+        ], weave_dir)
+        if metadata.returncode != 0:
+            verdict = "METADATA_FAILED"
         else:
-            verdict = "MISMATCH"
+            verification = run([node, str(weave_js), "verify", str(net), str(asc)], weave_dir)
+            match = verification.returncode == 0 and re.search(
+                r"(?im)^\s*MATCH(?:\s|$)", verification.stdout or ""
+            )
+            weave_verdict = "MATCH" if match else "MISMATCH"
+            if match:
+                smoke_result = run_simulation(
+                    asc,
+                    ltspice,
+                    result_path.parent / f"{net.stem}-asc.run-report.json",
+                    artifact_stem=f"{net.stem}-asc",
+                    output_dir=result_path.parent,
+                )
+                smoke_verdict = "PASS" if smoke_result.get("ok") else "FAIL"
+                verdict = "MATCH" if smoke_verdict == "PASS" else "ASC_SMOKE_FAILED"
+            else:
+                verdict = "MISMATCH"
     else:
         verdict = "NET_CHANGED_OR_CONVERSION_FAILED"
 
@@ -254,6 +275,12 @@ def main(argv: list[str] | None = None) -> int:
         "CONVERSION_STDOUT_BEGIN", conversion.stdout.rstrip(), "CONVERSION_STDOUT_END",
         "CONVERSION_STDERR_BEGIN", conversion.stderr.rstrip(), "CONVERSION_STDERR_END",
     ]
+    if metadata is not None:
+        lines.extend([
+            f"METADATA_EXIT_CODE={metadata.returncode}",
+            "METADATA_STDOUT_BEGIN", metadata.stdout.rstrip(), "METADATA_STDOUT_END",
+            "METADATA_STDERR_BEGIN", metadata.stderr.rstrip(), "METADATA_STDERR_END",
+        ])
     if verification is not None:
         lines.extend([
             f"VERIFICATION_EXIT_CODE={verification.returncode}",

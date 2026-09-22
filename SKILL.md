@@ -11,7 +11,7 @@ Use the user's requested scope: circuit design, edits, simulation, result inspec
 
 Read `.ltspice-codex-config.json` beside this file for Python, LTspice, Weave, and the output root. Reuse valid configuration; no routine bootstrap, dependency reinstall, or helper-source inspection. For missing configuration or tool failures, read [setup and troubleshooting](references/operations.md).
 
-The canonical `.net`/`.cir` reported by the runner is the circuit source of truth. Plan topology, values, loads, analyses, quantitative requirements, and relevant tolerances before running. Preserve explicit user constraints; state reasonable assumptions where details do not affect the decision.
+The canonical `.net`/`.cir` reported by the runner is the circuit source of truth. Plan topology, values, loads, analyses, quantitative requirements, and relevant tolerances before running. For loaded filters, op-amp feedback, bridges, or buck startup, read the relevant [circuit checks](references/circuit-checks.md) before choosing values. Preserve explicit user constraints; state reasonable assumptions where details do not affect the decision.
 
 - For an unspecified high-impedance voltage output, add a high-value `RLOAD` to ground. Do not add it to internal, storage, sensing, intentionally floating, or current-output nodes. Include any consequential load in the design and report.
 - Use the lightest complete plan: `QUICK` for simple nominal checks; `STANDARD` for ordinary analog/tolerance work; `STRICT` for switching, power, nonlinear, or critical feedback work; `BATCH` for repeated candidates. These are planning labels, not successive validation stages.
@@ -25,7 +25,7 @@ The canonical `.net`/`.cir` reported by the runner is the circuit source of trut
 3. Run one complete plan using absolute paths:
 
    ```powershell
-   & '<configured Python>' '<skill root>\scripts\run_validation_intent.py' --net '<absolute NET>' --intent '<absolute intent.json>'
+   & '<configured Python>' '<skill root>\scripts\run_validation_intent.py' --net '<absolute NET>' --intent '<absolute intent.json>' --config '<skill root>\.ltspice-codex-config.json'
    ```
 
 4. Read the compact result first: `status`, `failure_class`, `failed_requirements`, `summary_path`, `ltspice_calls`, and `evidence_reused`. Use its `canonical_net` for every subsequent step. Inspect the summary for measurements, artifact paths, and failure reasons; open RAW/LOG only when diagnosis or requested analysis needs them.
@@ -42,12 +42,12 @@ For each existing analysis kind, the runner updates the canonical NET when the i
 After electrical PASS, convert that exact canonical NET once:
 
 ```powershell
-& '<configured Python>' '<skill root>\scripts\weave_convert.py' --net '<canonical_net>' --asc '<expected_asc>' --result '<expected_weave_result>'
+& '<configured Python>' '<skill root>\scripts\weave_convert.py' --net '<canonical_net>' --asc '<expected_asc>' --result '<expected_weave_result>' --config '<skill root>\.ltspice-codex-config.json'
 ```
 
 Use paths from the compact result; `expected_asc` and `expected_weave_result` are destinations, not evidence that files already exist. For an existing ASC, add `--force` only after preserving its rollback copy. Do not hand-author or repair ASC coordinates.
 
-The finalizer must exit successfully with `WEAVE_VERDICT=MATCH`, `ASC_SMOKE=PASS`, and `VERDICT=MATCH`. It runs the one required LTspice smoke check for every delivered ASC; do not repeat the engineering suite for that check. Connectivity MATCH alone is insufficient. In BATCH, finalize only the selected candidates.
+The finalizer must exit successfully with `WEAVE_VERDICT=MATCH`, `ASC_SMOKE=PASS`, and `VERDICT=MATCH`. It runs the one required LTspice smoke check for every delivered ASC; do not repeat the engineering suite for that check. It also preserves canonical signal labels and explicit subcircuit model bindings using Weave's pin map, without changing layout. Connectivity MATCH alone is insufficient. In BATCH, finalize only the selected candidates.
 
 ## Deliver
 

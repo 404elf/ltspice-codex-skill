@@ -179,5 +179,44 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
             self.assertIn("VERDICT=ASC_SMOKE_FAILED", text)
 
 
+class WeaveMetadataTests(unittest.TestCase):
+    def test_explicit_models_follow_readable_nested_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "models").mkdir()
+            (root / "models/device.lib").write_text(".subckt DEVICE p m vp vm out\n.ends\n")
+            (root / "wrapper.lib").write_text(".include models/device.lib\n.subckt CUSTOM p m vp vm out\n.ends\n")
+            net = root / "input.net"
+            net.write_text("* input\n.include wrapper.lib\n.include unknown_search_path.lib\n.end\n")
+            self.assertEqual(weave.explicit_subcircuits(net), ["custom", "device"])
+
+    def test_metadata_failure_blocks_verify_and_smoke(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            net = root / "input.net"
+            net.write_text("* input\nV1 in 0 1\nR1 in 0 1k\n.op\n.end\n")
+            before = net.read_bytes()
+            asc = root / "input.asc"
+            ltspice = root / "LTspice.exe"
+            ltspice.write_bytes(b"stub")
+            (root / "weave.js").write_text("// stub")
+            result = root / "verification.txt"
+
+            def fake_run(command, _cwd):
+                if "convert" in command:
+                    asc.write_text("Version 4\n")
+                    return weave.subprocess.CompletedProcess(command, 0, "converted", "")
+                self.assertTrue(any(str(item).endswith("weave_metadata.js") for item in command))
+                return weave.subprocess.CompletedProcess(command, 1, "", "missing NET instances")
+
+            with patch.object(weave, "run", side_effect=fake_run), patch.object(weave, "run_simulation") as smoke:
+                code = weave.main(["--net", str(net), "--weave-dir", str(root), "--node", "node",
+                                   "--ltspice", str(ltspice), "--result", str(result)])
+            self.assertEqual(code, 1)
+            smoke.assert_not_called()
+            self.assertIn("VERDICT=METADATA_FAILED", result.read_text())
+            self.assertEqual(net.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

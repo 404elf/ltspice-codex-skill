@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 
-PREFLIGHT_VERSION = "2"
+PREFLIGHT_VERSION = "3"
 WEAVE_PREFIXES = set("RCLVIDQMJXEGFHBSWTKA")
 VALIDATION_ONLY_DIRECTIVES = (".nodeset", ".options", ".save", ".meas", ".step")
 
@@ -21,7 +21,7 @@ def terminals(tokens: list[str]) -> list[str]:
         return []
     prefix = tokens[0][0].upper()
     counts = {"R": 2, "C": 2, "L": 2, "D": 2, "V": 2, "I": 2, "B": 2,
-              "E": 4, "F": 2, "G": 4, "H": 2, "J": 3, "M": 4}
+              "E": 4, "F": 2, "G": 4, "H": 2, "J": 3, "M": 4, "S": 4}
     if prefix == "X":
         return tokens[1:-1]
     if prefix == "Q":
@@ -86,9 +86,8 @@ def main() -> int:
             continue
         tokens = line.split()
         for node in terminals(tokens):
-            if node.lower() not in {"0", "gnd"}:
-                counts[node.lower()] += 1
-    single_use = sorted(node for node, count in counts.items() if count == 1)
+            counts[node.lower()] += 1
+    single_use = sorted(node for node, count in counts.items() if count == 1 and node not in {"0", "gnd"})
     checks.append({"name": "no_obvious_single_use_nets", "ok": not single_use, "details": single_use})
     missing = [name for name in args.required_net if name.lower() not in counts]
     checks.append({"name": "required_nets", "ok": not missing, "details": missing})
