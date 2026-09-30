@@ -13,6 +13,14 @@ import weave_convert as weave  # noqa: E402
 import run_validation_intent as intent  # noqa: E402
 
 
+def write_layout_report(command, status="PASS"):
+    """Model the layout adapter's persisted acceptance result."""
+    Path(command[6]).write_text(json.dumps({
+        "status": status, "selected_mode": 3 if status == "PASS" else None,
+        "selected": {"body_overlaps": [], "unknown_symbols": []},
+    }), encoding="utf-8")
+
+
 class WeaveArtifactLayoutTests(unittest.TestCase):
     def test_default_save_directive_is_absent_from_canonical_net_and_asc(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -52,6 +60,7 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
 
             def fake_run(command, _cwd):
                 if "convert" in command:
+                    write_layout_report(command)
                     directives = [
                         line for line in canonical.read_text(encoding="utf-8").splitlines()
                         if line.lstrip().startswith(".")
@@ -121,6 +130,7 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
 
             def fake_run(command, _cwd):
                 if "convert" in command:
+                    write_layout_report(command)
                     asc.write_bytes(b"Version 4\nSHEET 1 1200 800\n")
                     return weave.subprocess.CompletedProcess(command, 0, "converted\n", "")
                 return weave.subprocess.CompletedProcess(command, 0, "MATCH\n", "")
@@ -139,6 +149,8 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
             text = result.read_text(encoding="utf-8")
             self.assertIn("VERDICT=MATCH", text)
             self.assertIn("ASC_SMOKE=PASS", text)
+            self.assertIn("LAYOUT_VERDICT=PASS", text)
+            self.assertIn("LAYOUT_MODE=3", text)
             call = smoke_runner.call_args
             self.assertEqual(call.kwargs["output_dir"].resolve(), support.resolve())
 
@@ -159,6 +171,7 @@ class WeaveArtifactLayoutTests(unittest.TestCase):
 
             def fake_run(command, _cwd):
                 if "convert" in command:
+                    write_layout_report(command)
                     asc.write_bytes(b"Version 4\n")
                     return weave.subprocess.CompletedProcess(command, 0, "converted\n", "")
                 return weave.subprocess.CompletedProcess(command, 0, "MATCH\n", "")
@@ -190,7 +203,7 @@ class WeaveMetadataTests(unittest.TestCase):
             net.write_text("* input\n.include wrapper.lib\n.include unknown_search_path.lib\n.end\n")
             self.assertEqual(weave.explicit_subcircuits(net), ["custom", "device"])
 
-    def test_metadata_failure_blocks_verify_and_smoke(self):
+    def test_layout_metadata_failure_blocks_verify_and_smoke(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             net = root / "input.net"
@@ -203,10 +216,8 @@ class WeaveMetadataTests(unittest.TestCase):
             result = root / "verification.txt"
 
             def fake_run(command, _cwd):
-                if "convert" in command:
-                    asc.write_text("Version 4\n")
-                    return weave.subprocess.CompletedProcess(command, 0, "converted", "")
-                self.assertTrue(any(str(item).endswith("weave_metadata.js") for item in command))
+                self.assertTrue(any(str(item).endswith("weave_layout.js") for item in command))
+                write_layout_report(command, "FAIL")
                 return weave.subprocess.CompletedProcess(command, 1, "", "missing NET instances")
 
             with patch.object(weave, "run", side_effect=fake_run), patch.object(weave, "run_simulation") as smoke:
@@ -214,8 +225,32 @@ class WeaveMetadataTests(unittest.TestCase):
                                    "--ltspice", str(ltspice), "--result", str(result)])
             self.assertEqual(code, 1)
             smoke.assert_not_called()
-            self.assertIn("VERDICT=METADATA_FAILED", result.read_text())
+            self.assertIn("VERDICT=LAYOUT_FAILED", result.read_text())
+            self.assertIn("missing NET instances", result.read_text())
             self.assertEqual(net.read_bytes(), before)
+
+    def test_missing_layout_evidence_blocks_successful_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            net = root / "input.net"
+            net.write_text("* input\nV1 in 0 1\nR1 in 0 1k\n.op\n.end\n")
+            asc = root / "input.asc"
+            ltspice = root / "LTspice.exe"
+            ltspice.write_bytes(b"stub")
+            (root / "weave.js").write_text("// stub")
+            result = root / "verification.txt"
+
+            def fake_run(command, _cwd):
+                self.assertIn("convert", command)
+                asc.write_text("Version 4\n")
+                return weave.subprocess.CompletedProcess(command, 0, "converted", "")
+
+            with patch.object(weave, "run", side_effect=fake_run), patch.object(weave, "run_simulation") as smoke:
+                code = weave.main(["--net", str(net), "--weave-dir", str(root), "--node", "node",
+                                   "--ltspice", str(ltspice), "--result", str(result)])
+            self.assertEqual(code, 1)
+            smoke.assert_not_called()
+            self.assertIn("LAYOUT_VERDICT=FAIL", result.read_text())
 
 
 if __name__ == "__main__":

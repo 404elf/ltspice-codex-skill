@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert one exact netlist with Weave and require round-trip MATCH."""
+"""Convert an exact netlist with layout, connectivity, and LTspice gates."""
 
 from __future__ import annotations
 
@@ -220,44 +220,56 @@ def main(argv: list[str] | None = None) -> int:
     result_path.parent.mkdir(parents=True, exist_ok=True)
 
     before = sha256(net)
-    conversion = run([node, str(weave_js), "convert", str(net), str(asc)], weave_dir)
+    layout_path = result_path.with_suffix(".layout.json")
+    symbol_roots = [asc.parent, net.parent, ltspice.parent / "lib" / "sym"]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        symbol_roots.append(Path(local_app_data) / "LTspice" / "lib" / "sym")
+    conversion = run([
+        node, str(Path(__file__).with_name("weave_layout.js")), "convert",
+        str(weave_dir), str(net), str(asc), str(layout_path),
+        json.dumps(explicit_subcircuits(net)),
+        json.dumps([str(root) for root in dict.fromkeys(symbol_roots) if root.is_dir()]),
+    ], weave_dir)
     verification = None
-    metadata = None
+    layout: dict[str, object] = {}
+    try:
+        loaded_layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        if isinstance(loaded_layout, dict):
+            layout = loaded_layout
+    except (OSError, json.JSONDecodeError):
+        pass
+    layout_verdict = "PASS" if conversion.returncode == 0 and layout.get("status") == "PASS" else "FAIL"
     smoke_result: dict[str, object] | None = None
     smoke_verdict = "NOT_RUN"
     weave_verdict = "ERROR"
     verdict = "ERROR"
     dependency_paths_rewritten = False
     after = sha256(net)
-    if conversion.returncode == 0 and asc.is_file() and after == before:
+    if conversion.returncode == 0 and asc.is_file() and after == before and layout_verdict == "PASS":
         asc_text = asc.read_bytes().decode("latin-1")
         rewritten, dependency_paths_rewritten = rewrite_asc_dependency_paths(asc_text, net, asc)
         if dependency_paths_rewritten:
             asc.write_bytes(rewritten.encode("latin-1"))
-        metadata = run([
-            node, str(Path(__file__).with_name("weave_metadata.js")),
-            str(weave_dir), str(net), str(asc), json.dumps(explicit_subcircuits(net)),
-        ], weave_dir)
-        if metadata.returncode != 0:
-            verdict = "METADATA_FAILED"
-        else:
-            verification = run([node, str(weave_js), "verify", str(net), str(asc)], weave_dir)
-            match = verification.returncode == 0 and re.search(
-                r"(?im)^\s*MATCH(?:\s|$)", verification.stdout or ""
+        verification = run([node, str(weave_js), "verify", str(net), str(asc)], weave_dir)
+        match = verification.returncode == 0 and re.search(
+            r"(?im)^\s*MATCH(?:\s|$)", verification.stdout or ""
+        )
+        weave_verdict = "MATCH" if match else "MISMATCH"
+        if match:
+            smoke_result = run_simulation(
+                asc,
+                ltspice,
+                result_path.parent / f"{net.stem}-asc.run-report.json",
+                artifact_stem=f"{net.stem}-asc",
+                output_dir=result_path.parent,
             )
-            weave_verdict = "MATCH" if match else "MISMATCH"
-            if match:
-                smoke_result = run_simulation(
-                    asc,
-                    ltspice,
-                    result_path.parent / f"{net.stem}-asc.run-report.json",
-                    artifact_stem=f"{net.stem}-asc",
-                    output_dir=result_path.parent,
-                )
-                smoke_verdict = "PASS" if smoke_result.get("ok") else "FAIL"
-                verdict = "MATCH" if smoke_verdict == "PASS" else "ASC_SMOKE_FAILED"
-            else:
-                verdict = "MISMATCH"
+            smoke_verdict = "PASS" if smoke_result.get("ok") else "FAIL"
+            verdict = "MATCH" if smoke_verdict == "PASS" else "ASC_SMOKE_FAILED"
+        else:
+            verdict = "MISMATCH"
+    elif after == before and layout_verdict != "PASS":
+        verdict = "LAYOUT_FAILED"
     else:
         verdict = "NET_CHANGED_OR_CONVERSION_FAILED"
 
@@ -268,6 +280,9 @@ def main(argv: list[str] | None = None) -> int:
         f"NET_SHA256_BEFORE={before}",
         f"NET_SHA256_AFTER={after}",
         f"WEAVE_VERDICT={weave_verdict}",
+        f"LAYOUT_VERDICT={layout_verdict}",
+        f"LAYOUT_REPORT={layout_path}",
+        f"LAYOUT_MODE={layout.get('selected_mode')}",
         f"ASC_SMOKE={smoke_verdict}",
         f"VERDICT={verdict}",
         f"DEPENDENCY_PATHS_REWRITTEN={str(dependency_paths_rewritten).lower()}",
@@ -275,12 +290,6 @@ def main(argv: list[str] | None = None) -> int:
         "CONVERSION_STDOUT_BEGIN", conversion.stdout.rstrip(), "CONVERSION_STDOUT_END",
         "CONVERSION_STDERR_BEGIN", conversion.stderr.rstrip(), "CONVERSION_STDERR_END",
     ]
-    if metadata is not None:
-        lines.extend([
-            f"METADATA_EXIT_CODE={metadata.returncode}",
-            "METADATA_STDOUT_BEGIN", metadata.stdout.rstrip(), "METADATA_STDOUT_END",
-            "METADATA_STDERR_BEGIN", metadata.stderr.rstrip(), "METADATA_STDERR_END",
-        ])
     if verification is not None:
         lines.extend([
             f"VERIFICATION_EXIT_CODE={verification.returncode}",
@@ -297,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     result_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"VERDICT={verdict}")
     print(f"WEAVE_VERDICT={weave_verdict}")
+    print(f"LAYOUT_VERDICT={layout_verdict}")
+    print(f"LAYOUT_REPORT={layout_path}")
     print(f"ASC_SMOKE={smoke_verdict}")
     print(f"ASC={asc}")
     print(f"RESULT={result_path}")

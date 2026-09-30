@@ -49,7 +49,9 @@ After electrical PASS, convert that exact canonical NET once:
 
 Use paths from the compact result; `expected_asc` and `expected_weave_result` are destinations, not evidence that files already exist. For an existing ASC, add `--force` only after preserving its rollback copy. Do not hand-author or repair ASC coordinates.
 
-The finalizer must exit successfully with `WEAVE_VERDICT=MATCH`, `ASC_SMOKE=PASS`, and `VERDICT=MATCH`. It runs the one required LTspice smoke check for every delivered ASC; do not repeat the engineering suite for that check. It also preserves canonical signal labels and explicit subcircuit model bindings using Weave's pin map, without changing layout. Connectivity MATCH alone is insufficient. In BATCH, finalize only the selected candidates.
+The finalizer must exit successfully with `WEAVE_VERDICT=MATCH`, `LAYOUT_VERDICT=PASS`, `ASC_SMOKE=PASS`, and `VERDICT=MATCH`. It preserves canonical signal labels and explicit subcircuit model bindings using Weave's pin map, checks the resulting layout, and tries a bounded set of Weave layouts when necessary. It runs the one required LTspice smoke check only for the selected ASC; do not repeat the engineering suite for that check. Connectivity MATCH alone is insufficient. In BATCH, finalize only the selected candidates.
+
+Read `LAYOUT_REPORT` when layout fails or reports warnings. Symbol bounding-box overlap blocks delivery. Crowded node labels may be moved along their original wire segments, with each move checked for MATCH and recorded in the report; component and wire positions remain fixed. Text bounds are estimates, so layout PASS is not a pixel-perfect visual certificate. Inspect the generated schematic when readability is requested or warnings remain. Do not change the circuit topology or acceptance targets to fix a layout failure.
 
 ## Deliver
 

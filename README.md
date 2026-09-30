@@ -79,7 +79,9 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 
 默认会从 canonical NET 中移除 `.save` directive，因此最终 ASC 不包含 `.save`。只有用户明确要求保存指定波形或限制 RAW 变量时，才在 intent 中设置 `preserve_save: true` 保留它。
 
-最终 canonical NET 通过验证后才调用 Weave。Weave round-trip 必须返回 `MATCH`；每个交付给用户的 ASC 都会统一执行一次低成本 LTspice smoke。ASC 校验在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
+最终 canonical NET 通过验证后才调用 Weave。转换入口会在保留信号标签和模型绑定后，同时检查连通性和布局；发现元器件边界框相交时，自动尝试已有的保守布局和更大间距，不改动源 NET 或外部 Weave 安装。拥挤的节点标签可沿原有导线移到空处，每次移动都要求连通性仍为 `MATCH`，并保留元件和导线位置。只有 Weave round-trip 为 `MATCH` 且 `LAYOUT_VERDICT=PASS` 的候选才能进入最终 LTspice smoke。文字边界估计用于选择布局和提示，不能替代实际显示检查。
+
+每个交付给用户的 ASC 都会统一执行一次低成本 LTspice smoke。ASC 校验在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
 
 ## 输出目录和文件
 
@@ -94,6 +96,7 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
     ├── validation_summary.json / validation_summary.md
     ├── simulation_evidence.json
     ├── *weave-verification*.txt
+    ├── *weave-verification*.layout.json
     ├── *.png
     └── readable model dependencies
 ```
@@ -104,7 +107,8 @@ RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需
 - `<circuit-name>.asc`：按需由 Weave 从同一个 canonical NET 生成，位于交付目录顶层；
 - `<circuit-name>_files/*.raw`：当前 NET 仿真生成的波形数据；
 - `<circuit-name>_files/*.log`：当前 NET 仿真的 LTspice 日志；
-- `<circuit-name>_files/*weave-verification*.txt`：Weave round-trip 结果，只有包含 `MATCH` 才算通过；
+- `<circuit-name>_files/*weave-verification*.txt`：连通性、布局及 ASC smoke 的最终门禁结果；
+- `<circuit-name>_files/*weave-verification*.layout.json`：候选布局、选中模式、节点标签移动记录、碰撞和文字估计警告；
 - `<circuit-name>_files/validation_summary.json` / `validation_summary.md`：确定性验证摘要；
 - `<circuit-name>_files/*.png`：按请求生成的瞬态或 AC 图；
 - `<circuit-name>_files/*-asc.raw` / `*-asc.log`：最终用户 ASC 的附加 LTspice smoke 结果。
@@ -121,7 +125,8 @@ validation suite 会先静态检查 validation spec，再执行 LTspice。成功
 
 - LTspice 退出码为 0 不能单独证明仿真成功；必须有新 RAW、新 LOG，且 LOG 无 parser/simulation fatal error；
 - Weave `MATCH` 只证明原理图连通性与 NET 等价，不代表电气指标自动正确；
-- 任何模式只要生成用户 ASC，成功条件都是：最终 NET 仿真通过、RAW/LOG 校验通过、Weave 返回 `MATCH`、生成的 ASC 也通过 LTspice smoke；
+- 任何模式只要生成用户 ASC，成功条件都是：最终 NET 仿真通过、RAW/LOG 校验通过、Weave 返回 `MATCH`、布局门禁通过、生成的 ASC 也通过 LTspice smoke；
+- 布局门禁拒绝已知符号边界框相交及无法检查的符号；文字尺寸是估计值，PASS 不保证所有字号、字体和缩放下都无视觉遮挡；
 - Skill 不手工猜测 ASC 坐标，NET-to-ASC 转换始终由 Weave 完成。
 
 ## 许可证
