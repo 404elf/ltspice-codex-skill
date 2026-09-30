@@ -1,134 +1,181 @@
 # LTspice Codex Skill v2
 
-这是一个独立、可移植的 Codex Skill，用于根据自然语言生成 LTspice 网表、执行仿真、校验 RAW/LOG、测量指标，并用 Weave 将最终 NET 转换为 LTspice ASC 原理图。
+**用自然语言设计、仿真和验证电路，得到可编辑的 LTspice 原理图。**
 
-本仓库不包含 LTspice 安装包、专有模型或任何旧版 LTSPICE-AI 文件。
+告诉 Codex 电路用途、供电和目标指标，它会生成 SPICE 网表，调用本机 LTspice 验证，再通过 Weave 转成 `.asc` 原理图。交付内容包括电路文件、仿真数据和验证报告；你可以继续在 LTspice 中打开、查看和修改。
+
+[快速开始](#快速开始) · [使用示例](#使用示例) · [交付文件](#交付文件) · [常见问题](#常见问题) · [进阶文档](#进阶文档)
+
+## 能做什么
+
+- **设计电路**：从需求、传递函数或电路图片出发，生成可仿真的电路。
+- **验证指标**：检查截止频率、增益、偏置、瞬态电压等，报告测量值与 PASS / FAIL。
+- **修改与比较**：调整已有电路，检查元件容差，比较多个候选方案。
+- **交付原理图**：生成可编辑的 ASC，核对连通性，检查元件重叠，并对最终 ASC 再运行一次仿真。
+
+```text
+电路需求 → NET 网表 → LTspice 仿真与指标验证 → Weave → ASC 原理图与仿真检查
+```
 
 ## 快速开始
 
-1. 单独安装 Analog Devices 发布的 LTspice。
-2. 将本仓库安装或交给 Codex，然后直接发送下面这一句话：
+### 1. 准备环境
 
-   > Install and configure this LTspice simulation skill on this machine.
+当前安装与运行流程面向 **Windows**。你需要能够执行本机命令的 Codex，以及以下工具：
 
-如果已经安装旧版本，不需要重复安装，直接发送：
-> Update my installed `ltspice-sim-v2` Skill from https://github.com/404elf/ltspice-codex-skill to the latest `main` version. Preserve my LTspice installation, Weave setup, existing circuit outputs, and user configuration; update only the Skill files and required dependencies, then verify the new version.
+| 工具 | 用途 | 安装入口 |
+| --- | --- | --- |
+| LTspice | 电路仿真与原理图编辑 | [Analog Devices 官方下载](https://www.analog.com/en/resources/design-tools-and-calculators/ltspice-simulator.html) |
+| Python 3 | 仿真、数据读取和验证；已在 Python 3.12 验证 | [Python for Windows](https://www.python.org/downloads/windows/) |
+| Node.js 18+，含 npm | 运行 Weave 原理图转换 | [Node.js 下载](https://nodejs.org/en/download) |
 
-Codex 会更新 Skill 本身，并保留 LTspice、Weave 配置和已有电路输出。
+已有这些工具时可以直接复用。首次配置需要联网获取依赖；本仓库不包含 LTspice 安装包或专有模型。
 
-3. 配置完成后，直接描述要设计和仿真的电路，例如：
+### 2. 让 Codex 安装并配置
 
-   > Design a 1 kHz Butterworth low-pass filter and simulate it with LTspice.
+把下面这段话复制给 Codex：
 
-Codex 会根据本仓库中的 `bootstrap.py` 自动完成配置。初始化脚本会自动：
-
-- 检测本机 LTspice；
-- 创建 Skill 专用 `.venv` 并安装 `requirements.txt`；
-- 获取固定提交的 Weave CLI，必要时生成 lockfile，并安装固定版本的 `elkjs`；
-- 写入本机配置文件 `.ltspice-codex-config.json`；
-- 执行一次全新的 RC 冒烟测试。
-
-提示词可以使用英文。安装或配置时不需要把 PowerShell 当前目录切换到某个固定位置；如果手动执行脚本，则需要在仓库根目录运行。
-
-手动安装或排错：
-
-```powershell
-py -3 bootstrap.py
+```text
+请从 https://github.com/404elf/ltspice-codex-skill 安装并配置
+ltspice-sim-v2 Skill。先检查本机已有的 LTspice、Python、Node.js 和 npm，
+复用有效配置，并按仓库说明运行 bootstrap.py 完成初始化和验证。
+保留已有 LTspice 安装、用户配置和电路输出。
 ```
 
-只检查已有配置，不运行冒烟测试：
+初始化会创建 Skill 专用 Python 环境，安装依赖，获取固定版本的 Weave，写入本机配置，并运行一个新的 RC 测试电路。成功后，Codex 会报告配置文件和输出目录的位置。
+
+<details>
+<summary>手动配置（可选）</summary>
+
+将仓库安装到本机 Codex 的 Skill 目录后，在仓库根目录运行：
 
 ```powershell
-py -3 bootstrap.py --check-only
+py -3 .\bootstrap.py
 ```
 
-## 使用
+查看已有配置和工具路径，不执行仿真：
 
-安装完成后，可以使用 Skill 名称调用，也可以直接用自然语言描述：
+```powershell
+py -3 .\bootstrap.py --check-only
+```
+
+若系统没有 `py` 命令，可用已安装的 Python 3 解释器执行同一脚本。自定义 LTspice 路径和排错方法见 [配置与排错](references/operations.md)。
+
+</details>
+
+### 3. 试做第一个电路
 
 ```text
 $ltspice-sim-v2
-设计并仿真一个截止频率为 1 kHz 的 RC 低通滤波器。
+设计并仿真一个 1 kHz RC 低通滤波器，截止频率误差不超过 2%。
+输入为 AC 1 V，输出按高阻测量，扫频范围为 10 Hz～100 kHz。
+给我频响图、实测截止频率、可编辑的 ASC 原理图和验证报告。
 ```
 
-Skill 支持 `AUTO`、`QUICK`、`STANDARD`、`STRICT` 和 `BATCH` 作为验证计划标签，不是逐级重复执行的阶段。实际仿真范围由明确填写的 analyses、requirements 和 tolerances 决定：`AUTO` 不会自动推断分析，`STRICT` 不会自动增加检查，`BATCH` 不会自动生成候选电路。
+成功交付时，你会看到实测指标、是否满足要求，以及 `.asc`、网表和报告的文件链接。打开 `.asc` 即可继续在 LTspice 中使用。
 
-普通电路任务使用统一的 intent 入口；可运行的 NET/JSON 示例、测量字段和容差写法见 [validation intent](references/validation-intent.md)。
+中文和英文都可以。安装后也可以直接描述电路需求，不必每次写 Skill 名称。
 
-```powershell
-& '<configured-python>' '<skill-root>\scripts\run_validation_intent.py' `
-  --net '<absolute-circuit.net>' `
-  --intent '<absolute-validation-intent.json>'
+## 使用示例
+
+描述时尽量给出 **供电、输入信号、负载、目标指标和允许误差**。需要特定器件时，请同时说明型号或提供可读取的模型文件。
+
+### 使用真实运放模型
+
+```text
+使用 LT1001 设计一个同相放大器，供电为 ±15 V，负载为 100 kΩ。
+要求 10 Hz 小信号增益为 11 倍，误差不超过 1%。
+使用可读取的 LT1001 模型，给出仿真测量值和 ASC 原理图。
 ```
 
-入口会规范化 intent、解析本机配置、准备 canonical NET，然后调用现有 validation suite。读取它返回的 `canonical_net` 和 `summary_path`，用同一个 canonical NET 完成后续转换。`expected_asc` 是计划输出路径，不代表 ASC 已生成。底层 suite 和排错命令见 [setup and troubleshooting](references/operations.md)。
+### 检查元件容差
 
-它会先执行不调用 LTspice 的 validation-spec dry-run，提前检查分析、metric、`.param`、corner 和依赖。每个真正执行的分析和 corner 都要求新的 RAW/LOG 并解析 LOG 错误；成功的 simulation evidence 写入 `simulation_evidence.json`，按精确 NET、分析指令、参数、模型依赖和 LTspice 配置绑定。只修改 metric、target、tolerance、trace 取点或报告格式时，会重新解析匹配的 RAW，不重新调用 LTspice；电路、分析、参数、模型依赖或执行文件改变时，相关 evidence 才失效。结果集中写入 `validation_summary.json`，其中包含 PASS/FAIL、测量值、失败 corner、日志状态、LTspice 调用次数、复用次数、实际工具耗时和产物路径。原始 NET 含多个分析指令时，每个分析都会使用单独的派生 NET，不会把原始 NET 误当作某一个分析的精确输入。
+```text
+继续上面的 RC 低通，检查 R ±5%、C ±10% 的容差角落。
+标称截止频率仍要求在 1 kHz 的 ±2% 内，容差角落允许 ±20%。
+列出最差角落和对应截止频率。
+```
 
-同一验证计划可以为 requirement 设置 `scope: nominal`、`scope: corners` 或默认的 `scope: all`，分别保留标称、容差角落或两者共用的验收门槛；没有对应角落任务的 corner-only requirement 会提前报错。对于 NET 中已有且无歧义的分析类型，intent 中明确更新的扫频等指令会先写入 canonical NET 再验证，最终 ASC 因而带有同样的设置；额外分析类型和同类多套扫频仍需明确选择交付设置。
+### 修改已有电路
 
-数值测量会拒绝 NaN/Infinity、超出仿真范围的取点和未观测到 −3 dB 交点的截止频率请求。增益是线性幅值比，取点和截止频率使用已有采样点；应选择足够的扫频范围和分辨率。没有填写定量 requirements 的 PASS 只表示仿真执行通过，不能证明未声明的设计指标。
+```text
+把这个网表中的 R1 改为 20 kΩ，保留其余电路和原验收要求。
+先保留可恢复副本，再重新验证并更新 ASC。
+告诉我哪些指标通过、哪些失败。
+```
 
-RAW 默认使用 LTspice 二进制格式以减少大型仿真的 I/O；仅在需要文本调试时给 `scripts/run_ltspice.py` 增加 `--ascii`。
+也可以要求比较多个候选方案。请明确候选范围和评价指标；最终只为选中的方案生成 ASC。
 
-模型与容差说明：
+## 交付文件
 
-- `model_policy: real_device_required` 只是拦截已知 generic placeholder 的保护规则，不是模型来源、版本或真实性的 provenance certification；具体模型仍需由用户或工程流程确认。
-- grouped tolerance 可以同时绑定多个 analysis；Skill 会把常见写法规范化为同一个 canonical tolerance plan。
-- LTspice 中的 binary/non-text 模型资产不一定能作为普通 `.lib`/`.include` 文件被 staging。遇到这种情况必须使用明确可读取的文本模型或修复依赖来源，不能把 staging 失败当成仿真成功，也不会改写 LTspice 安装目录。
-
-默认会从 canonical NET 中移除 `.save` directive，因此最终 ASC 不包含 `.save`。只有用户明确要求保存指定波形或限制 RAW 变量时，才在 intent 中设置 `preserve_save: true` 保留它。
-
-最终 canonical NET 通过验证后才调用 Weave。转换入口会在保留信号标签和模型绑定后，同时检查连通性和布局；发现元器件边界框相交时，自动尝试已有的保守布局和更大间距，不改动源 NET 或外部 Weave 安装。拥挤的节点标签可沿原有导线移到空处，每次移动都要求连通性仍为 `MATCH`，并保留元件和导线位置。只有 Weave round-trip 为 `MATCH` 且 `LAYOUT_VERDICT=PASS` 的候选才能进入最终 LTspice smoke。文字边界估计用于选择布局和提示，不能替代实际显示检查。
-
-每个交付给用户的 ASC 都会统一执行一次低成本 LTspice smoke。ASC 校验在临时工作目录中运行，避免 LTspice 生成的同名 `.net` 覆盖源 NET，附加结果使用 `<stem>-asc.raw` 和 `<stem>-asc.log`，并保存到支持目录。
-
-## 输出目录和文件
-
-默认输出根目录由本机配置决定，每个电路使用独立交付目录。用户直接使用的顶层只保留最终 ASC 和一个支持目录：
+每个电路有独立目录。顶层 `.asc` 是日常打开的原理图，其余文件集中在支持目录：
 
 ```text
 <output-root>/<circuit-name>/
 ├── <circuit-name>.asc
 └── <circuit-name>_files/
     ├── <circuit-name>.net
-    ├── *.raw / *.log
     ├── validation_summary.json / validation_summary.md
+    ├── *.raw / *.log
+    ├── *weave-verification*.txt / *.layout.json
     ├── simulation_evidence.json
-    ├── *weave-verification*.txt
-    ├── *weave-verification*.layout.json
-    ├── *.png
-    └── readable model dependencies
+    └── 模型依赖与按需生成的图表
 ```
 
-成功运行结束时，Codex 必须报告以下路径：
+| 想做什么 | 看哪个文件 |
+| --- | --- |
+| 在 LTspice 中打开或编辑原理图 | 顶层 `.asc` |
+| 查看最终电路定义 | 支持目录中的 `.net`；后续验证以它为准 |
+| 查看指标、通过情况和失败原因 | `validation_summary.md` 或 `.json` |
+| 查看波形或诊断仿真错误 | `.raw` 波形数据、`.log` 日志 |
+| 查看原理图连通性与仿真检查 | `*weave-verification*.txt` |
+| 查看布局模式、碰撞与标签移动 | `*weave-verification*.layout.json` |
 
-- `<circuit-name>_files/<circuit-name>.net`：canonical 最终 SPICE 网表，也是电路的 source of truth；
-- `<circuit-name>.asc`：按需由 Weave 从同一个 canonical NET 生成，位于交付目录顶层；
-- `<circuit-name>_files/*.raw`：当前 NET 仿真生成的波形数据；
-- `<circuit-name>_files/*.log`：当前 NET 仿真的 LTspice 日志；
-- `<circuit-name>_files/*weave-verification*.txt`：连通性、布局及 ASC smoke 的最终门禁结果；
-- `<circuit-name>_files/*weave-verification*.layout.json`：候选布局、选中模式、节点标签移动记录、碰撞和文字估计警告；
-- `<circuit-name>_files/validation_summary.json` / `validation_summary.md`：确定性验证摘要；
-- `<circuit-name>_files/*.png`：按请求生成的瞬态或 AC 图；
-- `<circuit-name>_files/*-asc.raw` / `*-asc.log`：最终用户 ASC 的附加 LTspice smoke 结果。
+默认输出位置由本机 `.ltspice-codex-config.json` 中的 `output_root` 决定；首次初始化默认为 Skill 目录下的 `outputs/`。
 
-用户手动打开顶层 ASC 并点击 Run 后，LTspice 可能在顶层生成同名 `.net`、`.raw`、`.log`。这些文件只是可再生 sidecar，不是 canonical NET，也不属于 canonical simulation evidence；验证和报告始终以 `<circuit-name>_files/` 中的文件为准。
+**保留整个电路目录。** 支持目录可能包含 ASC 需要的模型文件。手动点击 LTspice 的 Run 后，顶层可能出现同名 `.net`、`.raw`、`.log`；这些是手动运行的附加文件，不能替代支持目录中的最终网表和验证记录。
 
-普通参数修改直接更新已有 NET，并替换对应 RAW/LOG，再从该 NET 替换 ASC；除非明确要求保留历史，否则不创建版本化目录。BATCH 只为选中的最终候选生成 ASC。
+## 常见问题
 
-## 验证机制（可选阅读）
+**已经安装过，怎么更新？**
 
-validation suite 会先静态检查 validation spec，再执行 LTspice。成功的 RAW/LOG 会按当前 NET、分析、参数和模型依赖绑定到 `simulation_evidence.json`；只修改 metric、目标值或容差时，会重新解析已有结果，不重复调用 LTspice。详细规则由 Skill 自动处理，普通用户无需手动配置。
+把下面这段话发给 Codex，无需重新安装 LTspice：
 
-## 验证边界
+```text
+请从 https://github.com/404elf/ltspice-codex-skill 的最新 main
+更新已安装的 ltspice-sim-v2 Skill。保留本机配置、LTspice 和 Weave 安装、
+以及已有电路输出。更新后核对实际安装文件并验证。
+```
 
-- LTspice 退出码为 0 不能单独证明仿真成功；必须有新 RAW、新 LOG，且 LOG 无 parser/simulation fatal error；
-- Weave `MATCH` 只证明原理图连通性与 NET 等价，不代表电气指标自动正确；
-- 任何模式只要生成用户 ASC，成功条件都是：最终 NET 仿真通过、RAW/LOG 校验通过、Weave 返回 `MATCH`、布局门禁通过、生成的 ASC 也通过 LTspice smoke；
-- 布局门禁拒绝已知符号边界框相交及无法检查的符号；文字尺寸是估计值，PASS 不保证所有字号、字体和缩放下都无视觉遮挡；
-- Skill 不手工猜测 ASC 坐标，NET-to-ASC 转换始终由 Weave 完成。
+**为什么仿真通过了，还要检查 ASC？**
 
-## 许可证
+网表验证检查电气行为；原理图转换还需核对连通性、模型绑定和布局。最终 ASC 必须通过 Weave `MATCH`、布局门禁和一次 LTspice 仿真检查，才算完成交付。
 
-本项目代码采用 GPL-3.0-or-later。Weave、PyLTSpice/spicelib、elkjs 和 LTspice 的许可与归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+**还会出现元件或文字重叠吗？**
+
+转换器会尝试有限组布局，拒绝已知元件边界框相交或无法检查的符号，并让拥挤节点标签沿原有导线避让。文字尺寸仍是估计值，需要仔细阅读的图应再检查实际显示；布局 PASS 不能保证所有字体、缩放下都无视觉遮挡。
+
+**只有 PASS，没有定量指标，代表设计达标了吗？**
+
+PASS 只证明已声明的检查通过。没有填写定量验收要求时，只能证明仿真执行通过；因此请在需求中写清指标和误差范围。
+
+**找不到工具、模型或仿真失败怎么办？**
+
+把失败信息和当前文件交给 Codex。工具路径问题先检查本机配置；模型需要可读取的依赖；电气指标失败则查看测量值和日志。详细处理方法见 [配置与排错](references/operations.md)。
+
+## 进阶文档
+
+普通使用只需描述需求；以下内容供需要控制验证计划或维护脚本时阅读。
+
+| 文档 | 内容 |
+| --- | --- |
+| [SKILL.md](SKILL.md) | Codex 的完整执行与交付流程 |
+| [验证计划与可运行示例](references/validation-intent.md) | 分析指令、测量字段、容差、标称与角落的验收要求 |
+| [电路检查要点](references/circuit-checks.md) | 滤波器负载、运放反馈、电桥、开关电源等设计检查 |
+| [配置与排错](references/operations.md) | 本机配置、命令行入口、依赖和失败处理 |
+
+`AUTO`、`QUICK`、`STANDARD`、`STRICT`、`BATCH` 是验证计划标签。实际覆盖由明确填写的分析、指标和容差决定；它们不会自动添加检查或生成候选电路。准确匹配的仿真数据可以复用，报告会区分新仿真与复用结果。具体模型的来源和适用性仍需确认；`real_device_required` 只拦截已知通用占位模型。
+
+## 许可证与致谢
+
+本项目代码采用 [GPL-3.0-or-later](LICENSE)。原理图转换使用 [Weave](https://github.com/senolgulgonul/weave)，仿真工具依赖 PyLTSpice / spicelib；第三方许可与归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。LTspice 由 Analog Devices 单独提供。
