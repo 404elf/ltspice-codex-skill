@@ -114,6 +114,7 @@ function estimateTextBox(symbol, kind, core) {
   const wy = supplied ? supplied.y : fallback[1];
   const align = supplied ? supplied.align : fallback[2];
   const size = supplied ? supplied.size : 2;
+  if (String(align).toLowerCase() === 'invisible') return null;
   // LTspice character metrics are not encoded in ASC. These deliberately
   // conservative boxes are estimates for warning/ranking only.
   const width = Math.max(16, Math.min(String(text).length, 64) * 8 * Math.max(1, size / 2));
@@ -206,9 +207,16 @@ function inspectLayout(ascText, core) {
     // FLAG 0 renders the ground glyph, not a node-name text label.
     if (flag.name === '0') continue;
     const width = Math.max(16, Math.min(flag.name.length, 64) * 8);
+    // LTspice chooses label justification from the local wire direction. A
+    // label on a horizontal pin can extend left over the symbol, while labels
+    // on vertical wires rotate upward. Cover horizontal justification instead
+    // of assuming all labels start eight units to the right of their anchor.
+    const horizontal = wires.some(w => w[1] === w[3] && pointOnWire(flag.x, flag.y, w));
+    const vertical = !horizontal && wires.some(w => w[0] === w[2] && pointOnWire(flag.x, flag.y, w));
     text_boxes.push({ owner: `FLAG:${flag.name}@${flag.x},${flag.y}`, kind: 'flag',
       anchor: [flag.x, flag.y], confidence: 'estimated',
-      bounds: [flag.x + 8, flag.y - 8, flag.x + 8 + width, flag.y + 8] });
+      bounds: vertical ? [flag.x - 8, flag.y - width - 8, flag.x + 8, flag.y + 8]
+        : [flag.x - width - 8, flag.y - 8, flag.x + width + 8, flag.y + 8] });
   }
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
@@ -362,6 +370,69 @@ function compareScore(a, b) {
   return 0;
 }
 
+function applyCompactDisplay(ascText, netText, core) {
+  const marker = netText.match(/^\* @ltspice-skill display=compact hide=([^\r\n]+)$/m);
+  if (!marker) return { asc: ascText, mode: 'inline', hidden_values: [] };
+  const requested = new Set(marker[1].split(',').map(name => name.toLowerCase()));
+  const parsed = parseAsc(ascText);
+  const allowed = new Map(parsed.syms.filter(s => requested.has((s.name || '').toLowerCase())
+    && ['res', 'cap', 'ind'].includes(s.sym) && /^\{[A-Za-z_]\w*\}$/.test(s.value || ''))
+    .map(s => [s.name.toLowerCase(), s]));
+  if (allowed.size !== requested.size) throw new Error('Compact display marker must identify existing passive parameter references.');
+  const lines = ascText.trimEnd().split(/\r?\n/);
+  const output = [];
+  const hidden = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^SYMBOL\s/.test(lines[i])) { output.push(lines[i]); continue; }
+    const block = [lines[i]];
+    while (i + 1 < lines.length && /^(?:WINDOW|SYMATTR)\s/.test(lines[i + 1])) block.push(lines[++i]);
+    const name = block.find(line => /^SYMATTR InstName\s/.test(line))?.replace(/^SYMATTR InstName\s+/, '');
+    const symbol = allowed.get((name || '').toLowerCase());
+    if (!symbol) { output.push(...block); continue; }
+    const supplied = symbol.windows['3'];
+    const defaults = core.SYMBOLS[symbol.sym]?.windows?.['3'] || [0, 0];
+    output.push(block[0], `WINDOW 3 ${supplied ? supplied.x : defaults[0]} ${supplied ? supplied.y : defaults[1]} Invisible 2`,
+      ...block.slice(1).filter(line => !/^WINDOW 3\s/.test(line)));
+    hidden.push(name);
+  }
+  // Directives keep their exact SPICE payload. Only the marked presentation
+  // moves them below all bodies, wires, ground anchors, and visible labels.
+  const compact = output.join('\n') + '\n';
+  const visibleText = parseAsc(compact).syms.flatMap(s => ['name', 'value'].map(kind => estimateTextBox(s, kind, core))).filter(Boolean);
+  const ys = [...parsed.wires.flatMap(w => [w[1], w[3]]), ...parsed.flags.map(f => f.y + Math.max(32, Math.min(f.name.length, 64) * 8 + 8)),
+    ...parsed.syms.map(s => rotatedBody(s, core)?.[3] ?? s.y),
+    ...visibleText.map(b => b.bounds[3]), 0];
+  const xs = [...parsed.wires.flatMap(w => [w[0], w[2]]), ...parsed.syms.map(s => s.x), 0];
+  const x = Math.floor(Math.min(...xs) / 16) * 16;
+  let y = Math.ceil((Math.max(...ys) + 64) / 16) * 16;
+  const directives = output.filter(line => /^TEXT\s/.test(line));
+  const parameterLines = directives.filter(line => /^TEXT\s+.*!\.param\b/i.test(line));
+  const otherLines = directives.filter(line => !parameterLines.includes(line));
+  const positioned = otherLines.map(line => {
+    const payload = line.replace(/^TEXT\s+-?\d+\s+-?\d+\s+\S+\s+\d+\s+/, '');
+    const result = `TEXT ${x} ${y} Left 2 ${payload}`;
+    y += 32;
+    return result;
+  });
+  const parameterY = y + 32;
+  if (parameterLines.length) {
+    y = parameterY;
+    positioned.push(`TEXT ${x} ${y} Left 2 ;Parameters`);
+    y += 32;
+    for (const line of parameterLines) {
+      positioned.push(`TEXT ${x} ${y} Left 2 ${line.replace(/^TEXT\s+-?\d+\s+-?\d+\s+\S+\s+\d+\s+/, '')}`);
+      y += 32;
+    }
+  }
+  const sheetWidth = Math.ceil((Math.max(...xs, x + Math.max(0, ...directives.map(line => line.length * 8))) + 64) / 16) * 16;
+  const sheetHeight = y + 64;
+  const drawing = output.filter(line => !/^TEXT\s/.test(line)).map(line => line.replace(/^SHEET (\d+) (\d+) (\d+)$/,
+    (_, number, width, height) => `SHEET ${number} ${Math.max(Number(width), sheetWidth)} ${Math.max(Number(height), sheetHeight)}`));
+  return { asc: [...drawing, ...positioned, ''].join('\n'),
+    mode: 'compact', hidden_values: hidden,
+    parameter_section: parameterLines.length ? { x, y: parameterY, lines: parameterLines.length } : null };
+}
+
 async function convertBest(netText, { core, compare, preserveMetadata, explicitSubcircuits = [], symbolRoots = [] }) {
   const attempts = [];
   let bestAccepted = null;
@@ -375,6 +446,10 @@ async function convertBest(netText, { core, compare, preserveMetadata, explicitS
       const generated = await core.convert(netText, options);
       const metadata = preserveMetadata(generated, netText, core, explicitSubcircuits);
       let asc = typeof metadata === 'string' ? metadata : metadata.text;
+      const display = applyCompactDisplay(asc, netText, core);
+      asc = display.asc;
+      attempt.display = { mode: display.mode, hidden_values: display.hidden_values,
+        parameter_section: display.parameter_section || null };
       attempt.connectivity_errors = compare(netText, asc);
       let layout = inspectLayout(asc, core);
       if (!attempt.connectivity_errors.length && !layout.unknown_symbols.length && !layout.body_overlaps.length) {
@@ -414,6 +489,7 @@ async function convertBest(netText, { core, compare, preserveMetadata, explicitS
   return {
     status: 'PASS', selected_mode: bestAccepted.mode, attempts,
     selected: { mode: bestAccepted.mode, options: bestAccepted.options,
+      display: bestAccepted.attempt.display,
       label_moves: bestAccepted.attempt.label_moves,
       body_overlaps: layout.body_overlaps, unknown_symbols: layout.unknown_symbols,
       unknown_text_geometry: layout.unknown_text_geometry,
@@ -462,4 +538,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { inspectLayout, estimateTextBox, loadSymbolWindows, placeSignalFlags, convertBest, parseAsc, readNet, cli };
+module.exports = { inspectLayout, estimateTextBox, loadSymbolWindows, applyCompactDisplay, placeSignalFlags, convertBest, parseAsc, readNet, cli };

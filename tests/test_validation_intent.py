@@ -15,6 +15,18 @@ import run_validation_intent as intent  # noqa: E402
 
 
 class ValidationIntentTests(unittest.TestCase):
+    def test_display_is_prepared_before_validation_and_input_is_preserved(self):
+        temp, root, net, config = self._environment()
+        with temp:
+            original = net.read_text(encoding="utf-8")
+            canonical = intent.prepare_canonical_net(intent.resolve_paths(net, config), schematic_display="compact")
+            self.assertEqual(net.read_text(encoding="utf-8"), original)
+            self.assertIn("R1 in out {R1v}", canonical.read_text(encoding="utf-8"))
+            self.assertEqual(intent.normalize_intent({})["schematic_display"], "auto")
+            self.assertEqual(intent.normalize_intent({"schematic_display": "compact"})["schematic_display"], "compact")
+            with self.assertRaises(intent.IntentError):
+                intent.normalize_intent({"schematic_display": "hide-everything"})
+
     def _environment(self):
         temp = tempfile.TemporaryDirectory()
         root = Path(temp.name)

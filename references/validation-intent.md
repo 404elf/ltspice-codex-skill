@@ -52,12 +52,21 @@ These values illustrate a particular requirement; choose actual limits from the 
 | `required_nets` | Nodes that must exist, e.g. `["in", "out"]`; this checks names, not full topology. |
 | `model_policy` | Optional `real_device_required` generic-model guard. |
 | `preserve_save` | Boolean, default `false`; preserve `.save` only when requested. |
+| `schematic_display` | `auto` (default), `compact`, or `inline`. Compact keeps eligible passive names visible and places their parameter values below the drawing. |
 
 The parser recognizes `tran`, `ac`, `dc`, `op`, `noise`, `tf`, and `pz`. Recognition does not promise a usable RAW file for every analysis; normal success still requires RAW/LOG validation. Prefer explicit analyses. If omitted, only a single unambiguous NET analysis can be inferred by the suite, and requirement routing must still be explicit.
 
 For multiple analyses, set each requirement's `analysis` to a unique analysis name. Requirements and tolerances may instead be nested inside their analysis object; do not mix nested and top-level forms for the same field.
 
 An explicit directive updates the delivered NET before simulation when both the NET and plan have one unambiguous directive of that kind. For example, changing the plan's only `.ac` sweep also updates the canonical NET's sole `.ac` line; the separate input file is preserved. Supplemental kinds and multiple alternative sweeps are validation-only. In those cases, set the intended delivery directive in the NET explicitly instead of assuming the finalizer chooses one.
+
+### Passive-value display
+
+Use `"schematic_display": "compact"` for a dense LC ladder or a request to show only component IDs. `auto` selects it when at least eight simple top-level R/L/C cards include four or more value strings longer than eight characters. Other circuits retain inline values. `inline` disables hiding; existing parameter references remain references rather than being evaluated for display.
+
+Before validation, `schematic_display.py` converts numeric cards such as `L1 in n1 14.763031u` to `L1 in n1 {L1v}` plus `.param L1v=14.763031u`. It preserves the exact numeric token, uses collision-free independent names, and groups new L/C/R definitions into lines of at most three assignments and normally at most 88 characters. Existing simple parameter references retain their definitions, including tolerance and `.step` bindings. Expressions, cards with extra options or continuation lines, and subcircuit internals are untouched and stay visible. A marker in the canonical NET tells the finalizer which passive Value windows to hide. The layout report records the result; it does not alter source waveform or active-model text.
+
+This happens before simulation and fingerprinting. Never edit a validated NET merely to hide labels after validation. The separate input NET is preserved; the canonical NET reported by the runner contains the values actually simulated and delivered.
 
 ## Requirements and measurement limits
 

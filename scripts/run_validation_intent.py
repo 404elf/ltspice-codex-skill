@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the existing validation suite from a small engineering intent.
 
-This adapter owns only representation normalization, schema checks, and path
-resolution.  Simulation, RAW/LOG validation, metrics, corners, and evidence
+This adapter owns representation normalization, passive-value presentation,
+schema checks, and path resolution. Simulation, RAW/LOG validation, metrics, corners, and evidence
 remain in run_validation_suite.py.
 """
 
@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from validation_support import dependency_manifest, stage_net_with_dependencies
+from schematic_display import prepare_schematic_display
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -312,6 +313,7 @@ def sync_delivery_analyses(text: str, analyses: list[dict[str, object]]) -> str:
 def prepare_canonical_net(
     paths: dict[str, Path], *, preserve_save: bool = False,
     analyses: list[dict[str, object]] | None = None,
+    schematic_display: str = "auto",
 ) -> Path:
     """Copy/promote the final NET into the delivery support directory.
 
@@ -330,6 +332,7 @@ def prepare_canonical_net(
     source_text = source.read_text(encoding="utf-8", errors="replace")
     canonical_text = source_text if preserve_save else strip_save_directives(source_text)
     canonical_text = sync_delivery_analyses(canonical_text, analyses or [])
+    canonical_text = prepare_schematic_display(canonical_text, schematic_display)
     if source == canonical:
         if canonical_text != source_text:
             canonical.write_text(canonical_text, encoding="utf-8")
@@ -775,7 +778,7 @@ def normalize_intent(intent: object) -> dict[str, object]:
         _move_aliases(intent, canonical, *aliases)
     allowed = {
         "mode", "analyses", "requirements", "tolerances", "required_nets",
-        "model_policy", "preserve_save",
+        "model_policy", "preserve_save", "schematic_display",
     }
     unknown = sorted(set(intent) - allowed)
     if unknown:
@@ -826,7 +829,11 @@ def normalize_intent(intent: object) -> dict[str, object]:
     preserve_save = intent.get("preserve_save", False)
     if not isinstance(preserve_save, bool):
         raise IntentError("preserve_save must be boolean")
-    return {"mode": mode, "spec": spec, "preserve_save": preserve_save}
+    schematic_display = _text(intent.get("schematic_display", "auto"), "schematic_display").lower()
+    if schematic_display not in {"auto", "compact", "inline"}:
+        raise IntentError("schematic_display must be auto, compact, or inline")
+    return {"mode": mode, "spec": spec, "preserve_save": preserve_save,
+            "schematic_display": schematic_display}
 
 
 def _failure(stage: str, error: str, *, summary_path: Path | None = None) -> dict[str, object]:
@@ -943,6 +950,7 @@ def main(argv: list[str] | None = None) -> int:
         canonical_net = prepare_canonical_net(
             paths, preserve_save=bool(normalized.get("preserve_save", False)),
             analyses=normalized["spec"]["analyses"],
+            schematic_display=str(normalized["schematic_display"]),
         )
         paths["net"] = canonical_net
         output = paths["output"]

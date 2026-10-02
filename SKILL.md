@@ -37,6 +37,8 @@ For each existing analysis kind, the runner updates the canonical NET when the i
 
 `.save` directives are removed from the canonical NET by default. Set `preserve_save: true` only when the user requests saved traces or restricted RAW variables, and include every trace needed by the requirements.
 
+For dense passive circuits, prefer component names on the drawing and a readable `Parameters` section below it. The intent's `schematic_display` defaults to `auto`: at least eight simple top-level R/L/C cards, with at least four value strings longer than eight characters, select compact display. Choose `compact` explicitly when useful for a dense ladder or when the user requests names only; choose `inline` when values should remain beside the symbols. Simple circuits stay inline. The runner replaces numeric tokens with independent parameter references before electrical validation, keeping their full original precision and existing parameter/tolerance definitions. Complex expressions, device options, and subcircuit internals are left alone. Use the returned canonical NET; do not parameterize it after PASS or merge equal nominal values into shared parameters without an engineering reason.
+
 ## Finalize requested schematics
 
 For a working 电路图 / 原理图, deliver the editable `.asc` and its validation evidence, unless the user explicitly requests a different output format. An SVG/PNG preview must come from the verified circuit; independently drawing symbols and wires or checking SVG/XML syntax does not verify electrical connectivity. If the user explicitly wants only an illustration or no simulation, respect that scope and label the result unverified.
@@ -50,6 +52,8 @@ After electrical PASS, convert that exact canonical NET once:
 Use paths from the compact result; `expected_asc` and `expected_weave_result` are destinations, not evidence that files already exist. For an existing ASC, add `--force` only after preserving its rollback copy. Do not hand-author or repair ASC coordinates.
 
 The finalizer must exit successfully with `WEAVE_VERDICT=MATCH`, `LAYOUT_VERDICT=PASS`, `ASC_SMOKE=PASS`, and `VERDICT=MATCH`. It preserves canonical signal labels and explicit subcircuit model bindings using Weave's pin map, checks the resulting layout, and tries a bounded set of Weave layouts when necessary. It runs the one required LTspice smoke check only for the selected ASC; do not repeat the engineering suite for that check. Connectivity MATCH alone is insufficient. In BATCH, finalize only the selected candidates.
+
+For a canonical NET marked for compact display by the runner, the finalizer hides eligible passive Value windows using LTspice's `Invisible` alignment and positions directives and grouped `.param` lines below the drawing. Parameterization alone does not hide `{L1v}`. Source waveforms and active-device model names remain visible. Inspect `selected.display` in the layout report for hidden instances and the parameter-section position. Values remain editable through the `.param` directives.
 
 Read `LAYOUT_REPORT` when layout fails or reports warnings. Symbol bounding-box overlap blocks delivery. Crowded node labels may be moved along their original wire segments, with each move checked for MATCH and recorded in the report; component and wire positions remain fixed. Text bounds are estimates, so layout PASS is not a pixel-perfect visual certificate. Inspect the generated schematic when readability is requested or warnings remain. Do not change the circuit topology or acceptance targets to fix a layout failure.
 

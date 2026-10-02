@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { inspectLayout, estimateTextBox, loadSymbolWindows, placeSignalFlags, convertBest, readNet } = require('../scripts/weave_layout.js');
+const { inspectLayout, estimateTextBox, loadSymbolWindows, applyCompactDisplay, placeSignalFlags, convertBest, readNet } = require('../scripts/weave_layout.js');
 
 function rotate([x, y], code) {
   if (code[0] === 'M') x = -x;
@@ -37,6 +37,28 @@ function schematic(symbols, wires = []) {
 }
 
 async function main() {
+  const displayInput = schematic([{ name: 'R1', x: 0, y: 0, value: '{R1v}' },
+    { sym: 'box', name: 'U1', x: 300, y: 0, value: 'LT1001' }], [[16, 96, 16, 500]])
+    + 'TEXT 0 20 Left 2 !.param R1v=1.23456789k\nTEXT 0 52 Left 2 !.ac dec 100 1 1Meg\n';
+  assert.equal(applyCompactDisplay(displayInput, '* simple', fixtureCore).asc, displayInput);
+  const compactDisplay = applyCompactDisplay(displayInput, '* @ltspice-skill display=compact hide=R1\n', fixtureCore);
+  assert.deepEqual(compactDisplay.hidden_values, ['R1']);
+  assert.match(compactDisplay.asc, /WINDOW 3 0 0 Invisible 2/);
+  assert.match(compactDisplay.asc, /SYMATTR Value \{R1v\}/);
+  assert.match(compactDisplay.asc, /SYMATTR Value LT1001/);
+  assert.match(compactDisplay.asc, /;Parameters/);
+  assert.match(compactDisplay.asc, /!\.param R1v=1\.23456789k/);
+  assert.ok(compactDisplay.parameter_section.y > 500);
+  assert.deepEqual(compactDisplay.asc.split('\n').filter(l => /^(WIRE|SYMBOL|SYMATTR) /.test(l)),
+    displayInput.split('\n').filter(l => /^(WIRE|SYMBOL|SYMATTR) /.test(l)));
+  assert.throws(() => applyCompactDisplay(displayInput, '* @ltspice-skill display=compact hide=U1\n', fixtureCore));
+  assert.equal(estimateTextBox({ sym: 'res', value: '{R1v}', windows: { 3: { align: 'Invisible' } } }, 'value', fixtureCore), null);
+  // Native LTspice can place horizontal pin labels to the left of the anchor.
+  const pinLabel = schematic([{ name: 'R1', x: 0, y: 0, rot: 'R270' }], [[96, -16, 192, -16]]) + 'FLAG 96 -16 n1\n';
+  assert.ok(inspectLayout(pinLabel, fixtureCore).estimated_text_conflicts.some(c => c.second === 'R1:body'));
+  const relocatedPinLabel = placeSignalFlags(pinLabel, 'NET', fixtureCore, () => []);
+  assert.ok(relocatedPinLabel.moves[0].to[0] > 96);
+  assert.deepEqual(inspectLayout(relocatedPinLabel.asc, fixtureCore).estimated_text_conflicts, []);
   // All four transformed corners matter for asymmetric bodies under mirror+rotation.
   const asymCore = fixtureCore;
   const rotated = inspectLayout(schematic([{ sym: 'box', name: 'U1', x: 100, y: 200, rot: 'M90' }]), asymCore);
