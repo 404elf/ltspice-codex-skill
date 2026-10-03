@@ -14,13 +14,14 @@ Read `.ltspice-codex-config.json` beside this file for Python, LTspice, Weave, a
 The canonical `.net`/`.cir` reported by the runner is the circuit source of truth. Plan topology, values, loads, analyses, quantitative requirements, and relevant tolerances before running. For loaded filters, op-amp feedback, bridges, or buck startup, read the relevant [circuit checks](references/circuit-checks.md) before choosing values. Preserve explicit user constraints; state reasonable assumptions where details do not affect the decision.
 
 - For an unspecified high-impedance voltage output, add a high-value `RLOAD` to ground. Do not add it to internal, storage, sensing, intentionally floating, or current-output nodes. Include any consequential load in the design and report.
+- When selecting new R/L/C values, prefer common commercial nominal values that meet the original requirements. Explicit user values, existing-circuit constraints, and ideal/theoretical synthesis take precedence. Read [component selection](references/circuit-checks.md#component-selection) when choosing or replacing values; select before validation, then simulate the actual choices. This is a design preference, not an automatic rounding step in conversion or parameter display.
 - Use the lightest complete plan: `QUICK` for simple nominal checks; `STANDARD` for ordinary analog/tolerance work; `STRICT` for switching, power, nonlinear, or critical feedback work; `BATCH` for repeated candidates. These are planning labels, not successive validation stages.
 - **The runner executes only the declared analyses, requirements, and tolerances.** `AUTO` does not infer them; `STRICT` does not add checks; `BATCH` does not generate candidates. Decide the coverage yourself and avoid duplicate nominal runs.
 - When a concrete device is required, use its readable model and `model_policy: real_device_required`. This rejects known generic placeholders; it does not certify model provenance or accuracy.
 
 ## Validate
 
-1. Create or update the NET with explicit ground `0`, unique references, usable model dependencies, a runnable analysis directive, and `.end`. Before replacing existing user files, verify a rollback copy outside the delivery directory. Use the same delivery paths for ordinary updates.
+1. Create or update the NET with the selected component values, explicit ground `0`, unique references, usable model dependencies, a runnable analysis directive, and `.end`. Before replacing existing user files, verify a rollback copy outside the delivery directory. Use the same delivery paths for ordinary updates.
 2. Read [validation intent](references/validation-intent.md) when writing an intent. Save the small JSON plan in the support directory. If nominal and corner limits differ, keep separate requirements with `scope: nominal` and `scope: corners` in that same plan; default `scope: all` applies a limit to both.
 3. Run one complete plan using absolute paths:
 

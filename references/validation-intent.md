@@ -8,7 +8,7 @@ For a requested 1 kHz RC low-pass with a high-impedance output, use this NET:
 
 ```spice
 * 1 kHz RC low-pass
-.param R=1.59k C=100n
+.param R=1.6k C=100n
 V1 in 0 AC 1
 R1 in out {R}
 C1 out 0 {C}
@@ -39,7 +39,7 @@ For a requested cutoff within 2% of 1 kHz, pair it with:
 }
 ```
 
-These values illustrate a particular requirement; choose actual limits from the user's request or justified engineering assumptions.
+These common nominal values illustrate a particular requirement; choose actual limits from the user's request or justified engineering assumptions. The component-selection preference is applied while designing the NET, before this plan is run; the adapter does not automatically round component values. See [component selection](circuit-checks.md#component-selection) for explicit-value overrides and practical-device checks.
 
 ## Top-level fields
 
