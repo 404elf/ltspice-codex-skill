@@ -36,7 +36,7 @@
 把下面这段话复制给 Codex：
 
 ```text
-请从 https://github.com/404elf/ltspice-codex-skill 安装并配置
+请从 https://github.com/404elf/ltspice-codex-skill 的最新 main 分支安装并配置
 ltspice-sim-v2 Skill。先检查本机已有的 LTspice、Python、Node.js 和 npm，
 复用有效配置，并按仓库说明运行 bootstrap.py 完成初始化和验证。
 保留已有 LTspice 安装、用户配置和电路输出。
@@ -47,7 +47,7 @@ ltspice-sim-v2 Skill。先检查本机已有的 LTspice、Python、Node.js 和 n
 <details>
 <summary>手动配置（可选）</summary>
 
-将仓库安装到本机 Codex 的 Skill 目录后，在仓库根目录运行：
+将仓库 `main` 分支的内容安装到本机 Codex 的 Skill 目录后，在仓库根目录运行：
 
 ```powershell
 py -3 .\bootstrap.py
