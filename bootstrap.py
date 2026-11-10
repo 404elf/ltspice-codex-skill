@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / ".ltspice-codex-config.json"
 REQUIREMENTS = ROOT / "requirements.txt"
 WEAVE_REPOSITORY = "https://github.com/senolgulgonul/weave.git"
-WEAVE_COMMIT = "feb1f2bd9019d966fcaa12f276936299267c798b"
+WEAVE_COMMIT = "bc9b3d3299f3d96fae3f9a1e56de2c639e40c68a"  # Weave v1.3.1
 WEAVE_ZIP = f"https://github.com/senolgulgonul/weave/archive/{WEAVE_COMMIT}.zip"
 WEAVE_ELKJS_VERSION = "0.9.3"
 
@@ -212,7 +212,8 @@ def extract_weave_archive(archive: Path, tools_dir: Path, weave_root: Path) -> N
 
 def obtain_weave() -> tuple[Path, str, str, str]:
     tools_dir = ROOT / "tools"
-    weave_root = tools_dir / "weave"
+    # Keep previous pins usable, including installations extracted from ZIP.
+    weave_root = tools_dir / f"weave-{WEAVE_COMMIT[:12]}"
     cli_dir = weave_root / "cli"
     weave_js = cli_dir / "weave.js"
     tools_dir.mkdir(exist_ok=True)

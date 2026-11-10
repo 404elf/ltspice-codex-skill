@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { inspectLayout, estimateTextBox, loadSymbolWindows, applyCompactDisplay, placeSignalFlags, convertBest, readNet } = require('../scripts/weave_layout.js');
+const { inspectLayout, estimateTextBox, loadSymbolWindows, applyCompactDisplay, placeSignalFlags, placeFlagLeads, convertBest, readNet } = require('../scripts/weave_layout.js');
 
 function rotate([x, y], code) {
   if (code[0] === 'M') x = -x;
@@ -120,6 +120,21 @@ async function main() {
   // A gap between collinear segments is not a connected route.
   const gap = crowded.replace('WIRE -128 16 16 16', 'WIRE 16 16 0 16\nWIRE -16 16 -128 16');
   assert.equal(placeSignalFlags(gap, 'canonical NET', fixtureCore, () => []).moves.length, 0);
+
+  // Neither horizontal anchor clears the output label on a short connection.
+  // A perpendicular lead must keep the existing connection and pass verification.
+  const tight = schematic([{ name: 'R1', x: 0, y: 0, rot: 'R270' }], [[96, -16, 112, -16]])
+    + 'FLAG 96 -16 OUT\n';
+  assert.equal(placeSignalFlags(tight, 'NET', fixtureCore, () => []).moves.length, 0);
+  const led = placeFlagLeads(tight, 'NET', fixtureCore, () => []);
+  assert.equal(led.moves.length, 1);
+  assert.equal(led.moves[0].lead.length, 16);
+  assert.match(led.asc, /WIRE 96 -16 112 -16/);
+  assert.deepEqual(inspectLayout(led.asc, fixtureCore).estimated_text_conflicts, []);
+  assert.equal(placeFlagLeads(tight, 'NET', fixtureCore, () => ['changed connectivity']).asc, tight);
+  const blocked = tight.replace('WIRE 96 -16 112 -16',
+    'WIRE 96 -16 112 -16\nWIRE 104 -32 128 -32\nWIRE 104 0 128 0');
+  assert.equal(placeFlagLeads(blocked, 'NET', fixtureCore, () => []).asc, blocked);
 
   const unknown = inspectLayout(schematic([{ sym: '__missing', name: 'X1', x: 0, y: 0 }]), fixtureCore);
   assert.equal(unknown.unknown_symbols.length, 1);

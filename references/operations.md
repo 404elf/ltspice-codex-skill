@@ -14,6 +14,8 @@ If missing or invalid, use `py -3 '<skill root>\bootstrap.py'` to set up the ava
 
 The intent runner uses `python`, `ltspice`, and `output_root`; the finalizer also uses configured `node` and `weave_cli`. Both entrypoints accept `--config '<config.json>'` for an explicitly needed alternate configuration. Do not change shared configuration simply to redirect one test run.
 
+When updating a configured installation to a new Weave pin, install and check that revision separately, then update only the configured Weave CLI path. Bootstrap keeps each pinned checkout in its own tool directory; keep the previous CLI available until the new path passes finalization.
+
 Use absolute script and input paths. Relative NET/intent paths resolve from the current working directory, whereas configuration paths resolve from the configuration directory. For a new circuit, placing its NET in `<output_root>/<circuit>/<circuit>_files/` avoids a redundant source copy. An input outside `output_root` is promoted to `<output_root>/<net-stem>/`; use the returned canonical path thereafter.
 
 ## Diagnose the actual failure
@@ -26,7 +28,7 @@ Use absolute script and input paths. Relative NET/intent paths resolve from the 
 | Failed numeric requirement | Inspect measured value, coverage, and failing corner; adjust the justified analysis or design. |
 | `no -3 dB crossing` / `outside simulated range` | Extend the analysis range or improve coverage; do not substitute the sweep boundary as a measurement. |
 | Weave mismatch or ASC smoke failure | Read the verification report and ASC run report. Preserve electrical validation evidence; repair the conversion/model cause, then rerun finalization. |
-| `LAYOUT_FAILED` or layout warnings | Read `LAYOUT_REPORT` for attempted modes, overlapping instances, unknown geometry, label moves, `selected.display`, and estimated text conflicts. The adapter already tries bounded Weave alternatives and verified label placement on existing wires. For crowded passive values, set the intent's `schematic_display` to `compact` and rerun validation before finalizing the returned canonical NET; do not edit a validated NET after PASS. Inspect the final ASC when readability matters. |
+| `LAYOUT_FAILED` or layout warnings | Read `LAYOUT_REPORT` for attempted modes, overlapping instances, unknown geometry, label moves, `selected.display`, and estimated text conflicts. The adapter tries bounded Weave alternatives, moves labels along existing wires, and can use a short verified lead when sliding a label does not clear it. For crowded passive values, set the intent's `schematic_display` to `compact` and rerun validation before finalizing the returned canonical NET; do not edit a validated NET after PASS. Inspect the final ASC when readability matters. |
 
 `failure_class` is a routing hint, not a definitive circuit diagnosis. Read the actual error before choosing an engineering change. After a failed attempted correction, retry only when a new identified cause or changed input justifies it; otherwise report the blocker and required missing information.
 

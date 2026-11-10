@@ -359,6 +359,78 @@ function placeSignalFlags(ascText, netText, core, compare) {
   return { asc, moves };
 }
 
+// If sliding a label cannot clear it, try a short perpendicular lead at an
+// existing endpoint on its wire. Only the attachment may touch existing geometry.
+function placeFlagLeads(ascText, netText, core, compare) {
+  let asc = ascText;
+  let layout = inspectLayout(asc, core);
+  const moves = [];
+  const newline = asc.includes('\r\n') ? '\r\n' : '\n';
+  for (let index = 0; layout.estimated_text_conflicts.length; index++) {
+    const { wires, flags, syms } = parseAsc(asc);
+    if (index >= flags.length) break;
+    const flag = flags[index];
+    const labelKey = f => `FLAG:${f.name}@${f.x},${f.y}:flag`;
+    const hasClash = (report, f) => report.estimated_text_conflicts.some(c =>
+      c.first === labelKey(f) || c.second === labelKey(f));
+    if (flag.name === '0' || !hasClash(layout, flag)) continue;
+    const pins = syms.flatMap(s => (core.SYMBOLS[s.sym]?.pins || []).map(pin => {
+      const [x, y] = core.rot(pin, s.rot);
+      return [s.x + x, s.y + y];
+    }));
+    const leads = [];
+    const seen = new Set();
+    for (const w of wires) {
+      if (!pointOnWire(flag.x, flag.y, w) || (w[0] === w[2] && w[1] === w[3])) continue;
+      const horizontal = w[1] === w[3];
+      for (const [x, y] of [w.slice(0, 2), w.slice(2, 4)]) {
+        const distance = Math.abs(x - flag.x) + Math.abs(y - flag.y);
+        if (distance > 32 || x % 16 || y % 16) continue;
+        for (const delta of [-16, 16, -32, 32]) {
+          const lead = [x, y, x + (horizontal ? 0 : delta), y + (horizontal ? delta : 0)];
+          const key = lead.join(',');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          leads.push({ lead, distance, length: Math.abs(delta) });
+        }
+      }
+    }
+    leads.sort((a, b) => a.length - b.length || a.distance - b.distance);
+    const lines = asc.split(/\r?\n/);
+    const flagLines = lines.flatMap((line, i) => /^\s*FLAG\s+-?\d+\s+-?\d+\s+\S/.test(line) ? [i] : []);
+    for (const { lead, length } of leads) {
+      const [x, y, ex, ey] = lead;
+      if (pins.some(p => pointOnWire(...p, lead)) || flags.some((f, i) =>
+        i !== index && pointOnWire(f.x, f.y, lead))) continue;
+      // For two orthogonal segments their bounding-box intersection is their
+      // actual intersection. Reject any overlap or contact beyond the root.
+      if (wires.some(w => {
+        const left = Math.max(Math.min(x, ex), Math.min(w[0], w[2]));
+        const right = Math.min(Math.max(x, ex), Math.max(w[0], w[2]));
+        const top = Math.max(Math.min(y, ey), Math.min(w[1], w[3]));
+        const bottom = Math.min(Math.max(y, ey), Math.max(w[1], w[3]));
+        return left <= right && top <= bottom
+          && !(left === x && right === x && top === y && bottom === y);
+      })) continue;
+      const trialLines = [...lines];
+      trialLines[flagLines[index]] = `FLAG ${ex} ${ey} ${flag.name}`;
+      trialLines.splice(flagLines[0], 0, `WIRE ${lead.join(' ')}`);
+      const trial = trialLines.join(newline);
+      const next = inspectLayout(trial, core);
+      if (next.wire_body_conflicts.length > layout.wire_body_conflicts.length
+          || next.estimated_text_conflicts.length >= layout.estimated_text_conflicts.length
+          || hasClash(next, { name: flag.name, x: ex, y: ey })
+          || compare(netText, trial).length) continue;
+      asc = trial;
+      layout = next;
+      moves.push({ name: flag.name, from: [flag.x, flag.y], to: [ex, ey],
+        lead: { from: [x, y], length }, connectivity_checked: true });
+      break;
+    }
+  }
+  return { asc, moves };
+}
+
 function score(layout) {
   return [layout.body_overlaps.length, layout.estimated_text_conflicts.length,
     layout.wire_body_conflicts.length, layout.area];
@@ -454,8 +526,9 @@ async function convertBest(netText, { core, compare, preserveMetadata, explicitS
       let layout = inspectLayout(asc, core);
       if (!attempt.connectivity_errors.length && !layout.unknown_symbols.length && !layout.body_overlaps.length) {
         const placed = placeSignalFlags(asc, netText, core, compare);
-        asc = placed.asc;
-        attempt.label_moves = placed.moves;
+        const withLeads = placeFlagLeads(placed.asc, netText, core, compare);
+        asc = withLeads.asc;
+        attempt.label_moves = [...placed.moves, ...withLeads.moves];
         layout = inspectLayout(asc, core);
         attempt.connectivity_errors = compare(netText, asc);
       }
@@ -538,4 +611,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { inspectLayout, estimateTextBox, loadSymbolWindows, applyCompactDisplay, placeSignalFlags, convertBest, parseAsc, readNet, cli };
+module.exports = { inspectLayout, estimateTextBox, loadSymbolWindows, applyCompactDisplay, placeSignalFlags, placeFlagLeads, convertBest, parseAsc, readNet, cli };
