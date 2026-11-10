@@ -56,10 +56,12 @@ The finalizer must exit successfully with `WEAVE_VERDICT=MATCH`, `LAYOUT_VERDICT
 
 For a canonical NET marked for compact display by the runner, the finalizer hides eligible passive Value windows using LTspice's `Invisible` alignment and positions directives and grouped `.param` lines below the drawing. Parameterization alone does not hide `{L1v}`. Source waveforms and active-device model names remain visible. Inspect `selected.display` in the layout report for hidden instances and the parameter-section position. Values remain editable through the `.param` directives.
 
-Read `LAYOUT_REPORT` when layout fails or reports warnings. Symbol bounding-box overlap blocks delivery. Crowded node labels may be moved along their original wire segments, with each move checked for MATCH and recorded in the report; component and wire positions remain fixed. Text bounds are estimates, so layout PASS is not a pixel-perfect visual certificate. Inspect the generated schematic when readability is requested or warnings remain. Do not change the circuit topology or acceptance targets to fix a layout failure.
+Read `LAYOUT_REPORT` when layout fails or reports warnings. Symbol bounding-box overlap blocks delivery. The finalizer can slide crowded labels along existing wires or add a short lead; each move is checked for MATCH and recorded, with existing component and wire positions preserved. Do not change circuit topology or acceptance targets to fix a layout failure.
+
+When readability needs checking, inspect an [offline preview](references/operations.md#offline-visual-review) of the finalized ASC using its matching `.asy` symbols. Use the LTspice interface only when exact native rendering matters. Both layout text bounds and offline text placement are estimates; keep visual review separate from electrical validation.
 
 ## Deliver
 
-Keep `<circuit>.asc` at the circuit-directory root and supporting files in `<circuit>_files/`: canonical NET, intent, RAW/LOG, summaries, models, plots, and verification. The runner supplies the exact paths. Root-level NET/RAW/LOG sidecars from manual LTspice runs are not canonical evidence.
+Keep `<circuit>.asc` at the circuit-directory root and supporting files in `<circuit>_files/`: canonical NET, intent, RAW/LOG, summaries, models, plots, previews, and verification. The runner supplies the exact paths. Root-level NET/RAW/LOG sidecars from manual LTspice runs are not canonical evidence.
 
 Report requested measurements and gate results, with links to the output directory, canonical NET, generated ASC, validation RAW/LOG, summary, and Weave result as applicable. Report failures as failures. PASS proves only the declared checks; a run without quantitative requirements proves execution, not compliance with unstated design targets. Stop once the requested checks and deliverables pass.

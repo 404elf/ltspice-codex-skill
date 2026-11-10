@@ -34,6 +34,12 @@ Use absolute script and input paths. Relative NET/intent paths resolve from the 
 
 Readable `.lib`/`.include` dependencies can be staged under the support directory. Binary or non-text model assets may not be stageable; require a usable model or a targeted dependency fix. Do not rewrite the LTspice installation, silently drop dependencies, or substitute a generic device.
 
+## Offline visual review
+
+When the user asks about readability or a layout warning needs visual review, render the exact final `.asc` to PNG or SVG with an available local ASC/ASY renderer. Resolve the symbols from the circuit's staged `.asy` files and the matching installed LTspice library. Inspect the image directly for overlapping parts, wires through symbols, readable labels, and clear directives. For before/after comparisons use the same render scale and symbol library. Save any delivered preview in the support directory alongside the layout report.
+
+Identify the image as an offline preview: fonts, label alignment, and glyphs can differ from LTspice, and missing symbol definitions must be reported. The preview supplements the layout report; connectivity, values, and simulation behavior still require their own checks. If a renderer is unavailable, report what the layout report establishes and that the image was not reviewed. Open the LTspice interface only when a material display question requires its exact rendering.
+
 ## Focused helpers
 
 Use these only when the intent workflow does not cover the requested operation or when diagnosing a failure:
